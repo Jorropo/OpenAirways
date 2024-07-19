@@ -83,8 +83,8 @@ const Plane = struct {
             .height = src.height,
         };
 
-        const rot = 0;
-        rl.drawTexturePro(img, src, target, origin, rot, rl.Color.white);
+        const rot: f32 = @floatFromInt(self.heading / 65536);
+        rl.drawTexturePro(img, src, target, origin, rot * 360, rl.Color.white);
 
         if (draw_debug) {
             const pos = try std.fmt.allocPrintZ(allocator, "id={}, pos=[{d}, {d}]", .{ self.id, self.p.x, self.p.y });
