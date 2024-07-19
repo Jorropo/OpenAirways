@@ -96,8 +96,8 @@ type State struct {
 func (s *State) Tick() {
 	s.Now++
 
-	// generating random traffic for testing purposes
-	if s.Now%10 == 0 {
+	// generating some traffic for testing purposes
+	if s.Now%8 == 1 {
 		s.Planes = append(s.Planes, Plane{
 			ID:   s.planeId,
 			time: s.Now,
@@ -111,7 +111,7 @@ func (s *State) Tick() {
 		// randomly make them do loops for testing purpose
 		if s.Planes[i].flyingStraight() {
 			xy, heading := s.Planes[i].Position(s.Now)
-			if abs(xy.Y) > 100 {
+			if abs(xy.Y) > 20 {
 				s.Planes[i].turn(s.Now, -heading)
 			}
 		}

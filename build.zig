@@ -1,6 +1,8 @@
 const std = @import("std");
+const Child = std.process.Child;
+const Step = std.Build.Step;
 
-pub fn build(b: *std.Build) void {
+pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
@@ -23,6 +25,9 @@ pub fn build(b: *std.Build) void {
     exe.linkLibrary(raylib_artifact);
     exe.root_module.addImport("raylib", raylib);
     exe.root_module.addImport("raygui", raygui);
+
+    const buildServerStep = BuildServerStep.create(b);
+    b.getInstallStep().dependOn(&buildServerStep.step);
 
     b.installArtifact(exe);
 
@@ -51,3 +56,42 @@ pub fn build(b: *std.Build) void {
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_exe_unit_tests.step);
 }
+
+const BuildServerMode = enum { default, skip };
+
+const BuildServerStep = struct {
+    step: Step,
+    mode: BuildServerMode,
+
+    pub fn create(b: *std.Build) *BuildServerStep {
+        const server_build_mode = b.option(BuildServerMode, "server-build", "Server build mode") orelse BuildServerMode.default;
+
+        const ptr = b.allocator.create(BuildServerStep) catch @panic("OOM");
+        ptr.* = .{
+            .step = Step.init(.{
+                .id = .custom,
+                .name = "build server",
+                .owner = b,
+                .makeFn = make,
+            }),
+            .mode = server_build_mode,
+        };
+        return ptr;
+    }
+
+    pub fn make(step: *Step, _: std.Progress.Node) anyerror!void {
+        const self: *BuildServerStep = @fieldParentPtr("step", step);
+        const b = step.owner;
+
+        switch (self.mode) {
+            .default => {
+                const main_pkg = b.path("cmd/server").getPath(b);
+                const out = b.path("game-server").getPath(b);
+                var go_build = [_][]const u8{ "go", "build", "-o", out, main_pkg };
+                var child = Child.init(&go_build, b.allocator);
+                _ = try child.spawnAndWait();
+            },
+            .skip => {},
+        }
+    }
+};
