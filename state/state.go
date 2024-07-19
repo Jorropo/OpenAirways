@@ -31,7 +31,7 @@ type XY struct {
 type Plane struct {
 	ID                   uint32
 	time                 Time // last time position was materialized
-	p                    XY
+	pos                  XY
 	WantHeading, heading Rot16
 }
 
@@ -43,7 +43,7 @@ func (p *Plane) Position(now Time) (XY, Rot16) {
 	if p.flyingStraight() {
 		distance := float64((now - p.time) * speed)
 		r := p.heading.Rad()
-		return XY{p.p.X + int32(distance*math.Sin(r)), p.p.Y + int32(distance*math.Cos(r))}, p.heading
+		return XY{p.pos.X + int32(distance*math.Sin(r)), p.pos.Y + int32(distance*math.Cos(r))}, p.heading
 	}
 
 	var toCenter Rot16
@@ -55,8 +55,8 @@ func (p *Plane) Position(now Time) (XY, Rot16) {
 		// right
 		toCenter = p.heading + tau/4
 	}
-	center_x := p.p.X + int32(turnRadius*math.Sin(toCenter.Rad()))
-	center_y := p.p.Y + int32(turnRadius*math.Cos(toCenter.Rad()))
+	center_x := p.pos.X + int32(turnRadius*math.Sin(toCenter.Rad()))
+	center_y := p.pos.Y + int32(turnRadius*math.Cos(toCenter.Rad()))
 	arc := turnRate * Rot16(now-p.time)
 	if diff < 0 {
 		arc = -arc
@@ -76,14 +76,14 @@ func (p *Plane) tick(now Time) {
 
 	dt := int(now - p.time)
 	if dt*turnRate > abs(int(p.heading-p.WantHeading)) {
-		p.p, _ = p.Position(now)
+		p.pos, _ = p.Position(now)
 		p.heading = p.WantHeading
 		p.time = now
 	}
 }
 
 func (p *Plane) turn(now Time, heading Rot16) {
-	p.p, p.heading = p.Position(now)
+	p.pos, p.heading = p.Position(now)
 	p.WantHeading = heading
 	p.time = now
 }
@@ -111,8 +111,8 @@ func (s *State) Tick() {
 
 		// randomly make them do loops for testing purpose
 		if s.Planes[i].flyingStraight() {
-			xy, heading := s.Planes[i].Position(s.Now)
-			if (xy.Y > 100 && heading == 0) || (xy.Y < -100 && heading == tau/2) {
+			pos, heading := s.Planes[i].Position(s.Now)
+			if (pos.Y > 100 && heading == 0) || (pos.Y < -100 && heading == tau/2) {
 				s.Planes[i].turn(s.Now, heading+tau/2)
 			}
 		}

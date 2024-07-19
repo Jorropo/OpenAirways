@@ -19,9 +19,7 @@ pub fn main() anyerror!void {
     defer {
         const check = gpa.deinit();
         switch (check) {
-            .leak => {
-                std.debug.print("Allocator deinit error\n", .{});
-            },
+            .leak => std.debug.print("Allocator deinit error\n", .{}),
             .ok => {},
         }
     }
@@ -67,7 +65,7 @@ const canvas_h: f32 = 560;
 
 const Plane = struct {
     id: u32 = 0,
-    p: XY = .{},
+    pos: XY = .{},
     want_heading: u16 = 0,
     heading: u16 = 0,
 
@@ -77,8 +75,8 @@ const Plane = struct {
         // convert XY to coords between 0 and screen size
         // and flip so positive y is upwards
         const target = rl.Rectangle{
-            .x = (self.p.x + canvas_w / 2) * screen_w / canvas_w,
-            .y = (-self.p.y + canvas_h / 2) * screen_h / canvas_h,
+            .x = (self.pos.x + canvas_w / 2) * screen_w / canvas_w,
+            .y = (-self.pos.y + canvas_h / 2) * screen_h / canvas_h,
             .width = src.width,
             .height = src.height,
         };
@@ -87,7 +85,7 @@ const Plane = struct {
         rl.drawTexturePro(img, src, target, origin, rot * 360, rl.Color.white);
 
         if (draw_debug) {
-            const pos = try std.fmt.allocPrintZ(allocator, "id={}, pos=[{d}, {d}]", .{ self.id, self.p.x, self.p.y });
+            const pos = try std.fmt.allocPrintZ(allocator, "id={}, pos=[{d}, {d}]", .{ self.id, self.pos.x, self.pos.y });
             rl.drawText(pos, @intFromFloat(target.x + target.width / 2), @intFromFloat(target.y - target.height / 2), 16, rl.Color.red);
             allocator.free(pos);
         }
@@ -140,8 +138,8 @@ fn read_data(allocator: Allocator, proc: *Child, state: *State) !void {
             const heading = r_u16(raw_planes[offset + 14 .. offset + 16]);
 
             buffered_state.planes[i].id = id;
-            buffered_state.planes[i].p.x = x;
-            buffered_state.planes[i].p.y = y;
+            buffered_state.planes[i].pos.x = x;
+            buffered_state.planes[i].pos.y = y;
             buffered_state.planes[i].want_heading = want_heading;
             buffered_state.planes[i].heading = heading;
         }
