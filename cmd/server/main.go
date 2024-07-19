@@ -29,21 +29,6 @@ func mainRet() error {
 		ticks = time.Tick(time.Second / state.TickRate)
 	case "slow":
 		ticks = time.Tick(time.Second)
-	case "byte":
-		// FIXME: byte mode is temporary, it might be RPC thing once we figure out user input
-		tks := make(chan time.Time)
-		ticks = tks
-		go func() {
-			var b [1]byte
-			for {
-				_, err := os.Stdin.Read(b[:])
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "waiting for bytes: %v\n", err)
-					os.Exit(1)
-				}
-				tks <- time.Now()
-			}
-		}()
 	default:
 		return fmt.Errorf("unknown tick mode %q", tickMode)
 	}
