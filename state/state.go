@@ -6,13 +6,13 @@ import (
 )
 
 const (
-	SubPixelFactor = 5
-	SubPixel       = 1 << SubPixelFactor
+	SubPixel       = 5
+	SubPixelFactor = 1 << SubPixel
 	TickRate       = 60
-	speed          = 40 * SubPixel / TickRate      // in SubPixel/tick
-	turnRate       = tau / 5 / TickRate            // Rot16 / 10s / tickRate gives turn rate per tick
-	turnPerimeter  = tau / turnRate * speed        // how long a complete 360° turn would be
-	turnRadius     = turnPerimeter / (2 * math.Pi) // the length between the center of the turn circle and the plane
+	speed          = 40 * SubPixelFactor / TickRate // in SubPixel/tick
+	turnRate       = tau / 5 / TickRate             // Rot16 / 10s / tickRate gives turn rate per tick
+	turnPerimeter  = tau / turnRate * speed         // how long a complete 360° turn would be
+	turnRadius     = turnPerimeter / (2 * math.Pi)  // the length between the center of the turn circle and the plane
 )
 
 type Time uint32
@@ -114,7 +114,7 @@ func (s *State) Tick() {
 		// randomly make them do loops for testing purpose
 		if s.Planes[i].flyingStraight() {
 			pos, heading := s.Planes[i].Position(s.Now)
-			if (pos.Y > 100*SubPixel && heading == 0) || (pos.Y < -100*SubPixel && heading == tau/2) {
+			if (pos.Y > 100*SubPixelFactor && heading == 0) || (pos.Y < -100*SubPixelFactor && heading == tau/2) {
 				s.Planes[i].turn(s.Now, heading+tau/2)
 			}
 		}
