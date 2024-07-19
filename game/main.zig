@@ -107,13 +107,13 @@ fn read_data(allocator: Allocator, proc: *Child, state: *State) !void {
 
     while (proc.term == null) {
         const out = proc.stdout orelse break;
-        _ = out.read(&header) catch break;
+        _ = out.readAll(&header) catch break;
 
         const plane_count = r_u32(header[4..8]);
         const raw_planes = try allocator.alloc(u8, 16 * plane_count);
         defer allocator.free(raw_planes);
 
-        _ = out.read(raw_planes) catch break;
+        _ = out.readAll(raw_planes) catch break;
 
         const now = r_u32(header[0..4]);
         buffered_state.now = now;
