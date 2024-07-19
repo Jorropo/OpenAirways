@@ -26,8 +26,9 @@ Give a new heading instruction to a plane, it will start turning in that directi
 # RPC between go server and zig client
 
 It starts with a game init packet which has this layout:
-- `u32` tick rate in hz 
+- `u32` tick rate in hz
 - `u5` SubPixel factor, how many in game units make up a pixel (expressed as `1 << x`)
+- `u32` speed of the plane in subpixel per tick
 
 After this it continously send game state packets:
 

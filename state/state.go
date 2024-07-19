@@ -9,9 +9,9 @@ const (
 	SubPixel       = 5
 	SubPixelFactor = 1 << SubPixel
 	TickRate       = 60
-	speed          = 40 * SubPixelFactor / TickRate // in SubPixel/tick
-	turnRate       = tau / 5 / TickRate             // Rot16 / 10s / tickRate gives turn rate per tick
-	turnPerimeter  = tau / turnRate * speed         // how long a complete 360° turn would be
+	Speed          = 40 * SubPixelFactor / TickRate // in SubPixel/tick
+	turnRate       = tau / 10 / TickRate            // Rot16 / 10s / tickRate gives turn rate per tick
+	turnPerimeter  = tau / turnRate * Speed         // how long a complete 360° turn would be
 	turnRadius     = turnPerimeter / (2 * math.Pi)  // the length between the center of the turn circle and the plane
 )
 
@@ -43,7 +43,7 @@ func (p *Plane) flyingStraight() bool {
 
 func (p *Plane) Position(now Time) (XY, Rot16) {
 	if p.flyingStraight() {
-		distance := float64((now - p.time) * speed)
+		distance := float64((now - p.time) * Speed)
 		r := p.heading.Rad()
 		return XY{p.pos.X + int32(distance*math.Sin(r)), p.pos.Y + int32(distance*math.Cos(r))}, p.heading
 	}
