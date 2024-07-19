@@ -29,13 +29,13 @@ pub fn main() anyerror!void {
 
     const server_args = [_][]const u8{ "./game-server", "-debug-tickmode", "realtime" };
     var proc = Child.init(&server_args, allocator);
+    proc.stdin_behavior = .Pipe;
     proc.stdout_behavior = .Pipe;
     proc.stderr_behavior = .Inherit;
     var state = State{};
 
     var thread = try start_server(allocator, &proc, &state);
 
-    state.initFinished.wait();
     rl.setTargetFPS(rl.getMonitorRefreshRate(rl.getCurrentMonitor())); // FIXME: I hate this, do explicit sync &| vsync in the render loop.
 
     const plane_img = rl.loadTexture("assets/plane_1.png");
@@ -45,6 +45,9 @@ pub fn main() anyerror!void {
 
     var input_state: InputState = .none;
 
+    state.initFinished.wait();
+    const in = proc.stdin orelse return;
+
     while (!rl.windowShouldClose()) { // Detect window close button or ESC key
         rl.beginDrawing();
         const frameClock: i64 = @intCast(state.timer.read());
@@ -53,7 +56,15 @@ pub fn main() anyerror!void {
         switch (input_state) {
             .plane_target => blk: {
                 if (rl.isMouseButtonReleased(rl.MouseButton.mouse_button_left)) {
-                    // TODO: emit heading change event
+                    var b = [_]u8{0} ** (4 + 4 + 2); // opcode + id + heading
+                    w_u32(b[0..4], GivePlaneHeading);
+                    w_u32(b[4..8], input_state.plane_target.plane_id);
+                    const h_rad = @mod(std.math.atan2(mouse_pos.x - input_state.plane_target.start.x, -mouse_pos.y - -input_state.plane_target.start.y) / std.math.tau, 1);
+                    const heading: u16 = std.math.lossyCast(u16, h_rad * 65536);
+                    print("heading: {}\n", .{heading});
+                    w_u16(b[8..10], heading);
+                    _ = try in.writeAll(&b);
+
                     input_state = .none;
                     break :blk;
                 }
@@ -236,12 +247,13 @@ fn read_data(allocator: Allocator, proc: *Child, state: *State) !void {
         for (0..plane_count) |i| {
             const offset = plane_size * i;
 
-            const id = r_u32(raw_planes[offset .. offset + 4]);
-            const x = r_f32(raw_planes[offset + 4 .. offset + 8]) / subPixelFactor;
-            const y = r_f32(raw_planes[offset + 8 .. offset + 12]) / subPixelFactor;
+            const b = raw_planes[offset..];
+            const id = r_u32(b[0..4]);
+            const x = r_f32(b[4..8]) / subPixelFactor;
+            const y = r_f32(b[8..12]) / subPixelFactor;
 
-            const want_heading = r_u16(raw_planes[offset + 12 .. offset + 14]);
-            const heading = r_u16(raw_planes[offset + 14 .. offset + 16]);
+            const want_heading = r_u16(b[12..14]);
+            const heading = r_u16(b[14..16]);
 
             buffered_state.planes[i].id = id;
             buffered_state.planes[i].pos.x = x;
@@ -260,18 +272,29 @@ fn read_data(allocator: Allocator, proc: *Child, state: *State) !void {
     allocator.free(buffered_state.planes);
 }
 
-fn r_u16(b: []u8) u16 {
-    return @as(u16, b[0]) | @as(u16, b[1]) << 8;
+fn r_u16(b: *const [2]u8) u16 {
+    return std.mem.readInt(u16, b, .little);
 }
 
-fn r_u32(b: []u8) u32 {
-    return @as(u32, b[0]) | (@as(u32, b[1]) << 8) | (@as(u32, b[2]) << 16) | (@as(u32, b[3]) << 24);
+fn r_u32(b: *const [4]u8) u32 {
+    return std.mem.readInt(u32, b, .little);
 }
 
-fn r_f32(b: []u8) f32 {
+fn r_f32(b: *const [4]u8) f32 {
     return @floatFromInt(r_i32(b));
 }
 
-fn r_i32(b: []u8) i32 {
-    return @as(i32, b[0]) | (@as(i32, b[1]) << 8) | (@as(i32, b[2]) << 16) | (@as(i32, b[3]) << 24);
+fn r_i32(b: *const [4]u8) i32 {
+    return std.mem.readInt(i32, b, .little);
 }
+
+fn w_u16(b: *[2]u8, x: u16) void {
+    std.mem.writeInt(u16, b, x, .little);
+}
+
+fn w_u32(b: *[4]u8, x: u32) void {
+    std.mem.writeInt(u32, b, x, .little);
+}
+
+// FIXME: enum this ¿
+const GivePlaneHeading = 1;

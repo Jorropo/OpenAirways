@@ -84,7 +84,7 @@ func (p *Plane) tick(now Time) {
 	}
 }
 
-func (p *Plane) turn(now Time, heading Rot16) {
+func (p *Plane) Turn(now Time, heading Rot16) {
 	p.pos, p.heading = p.Position(now)
 	p.WantHeading = heading
 	p.time = now
@@ -110,14 +110,6 @@ func (s *State) Tick() {
 
 	for i := range s.Planes {
 		s.Planes[i].tick(s.Now)
-
-		// randomly make them do loops for testing purpose
-		if s.Planes[i].flyingStraight() {
-			pos, heading := s.Planes[i].Position(s.Now)
-			if (pos.Y > 100*SubPixelFactor && heading == 0) || (pos.Y < -100*SubPixelFactor && heading == tau/2) {
-				s.Planes[i].turn(s.Now, heading+tau/2)
-			}
-		}
 	}
 }
 

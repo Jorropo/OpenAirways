@@ -4,7 +4,9 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
+	"log"
 	"os"
+	"slices"
 	"sync"
 	"time"
 
@@ -20,7 +22,7 @@ func main() {
 
 func mainRet() error {
 	var tickMode string
-	flag.StringVar(&tickMode, "debug-tickmode", "realtime", "tick mode is a debug flag that change the real world tick speed (realtime, slow (1hz), byte (one tick per byte on stdin))")
+	flag.StringVar(&tickMode, "debug-tickmode", "realtime", "tick mode is a debug flag that change the real world tick speed (realtime, slow (1hz))")
 	flag.Parse()
 
 	var ticks <-chan time.Time
@@ -33,22 +35,23 @@ func mainRet() error {
 		return fmt.Errorf("unknown tick mode %q", tickMode)
 	}
 
-	current := &state.State{}
+	var s state.State
+	var generation uint64 // generation is incremented on state modifications
 	var lk sync.Mutex
-	synchro := sync.Cond{L: &lk}
+	synchro := sync.Cond{L: &lk} // used with generation to know when to resend the state to the client
 
+	go handleInbound(&lk, &synchro, &s, &generation)
 	go func() {
 		for range ticks {
-			clone := current.Clone() // no need for sync since we are the only writer
-			clone.Tick()
 			lk.Lock()
-			current = clone // the sender is reading tho
+			s.Tick()
+			generation++
 			synchro.Broadcast()
 			lk.Unlock()
 		}
 	}()
 
-	var lastSentTick state.Time
+	var lastSentState uint64
 	var orig []byte
 	{
 		// Send game init packet
@@ -68,12 +71,10 @@ func mainRet() error {
 	}
 	for {
 		lk.Lock()
-		for current.Now <= lastSentTick {
+		for generation == lastSentState {
 			synchro.Wait()
 		}
-		s := current
-		lk.Unlock()
-		lastSentTick = s.Now
+		lastSentState = generation
 
 		size := 4 + // Now
 			4 + // len(Planes)
@@ -96,6 +97,7 @@ func mainRet() error {
 			b = u16(b, uint16(p.WantHeading))
 			b = u16(b, uint16(heading))
 		}
+		lk.Unlock()
 		_, err := os.Stdout.Write(orig)
 		if err != nil {
 			return fmt.Errorf("writing: %w", err)
@@ -103,6 +105,53 @@ func mainRet() error {
 	}
 }
 
+func handleInbound(lk *sync.Mutex, cond *sync.Cond, s *state.State, generation *uint64) {
+	var b []byte
+	for {
+		header := append(b[:0], make([]byte, 4)...)
+		_, err := os.Stdin.Read(header)
+		if err != nil {
+			log.Fatalf("reading header: %v", err)
+		}
+		op := binary.LittleEndian.Uint32(header)
+		switch op {
+		case GivePlaneHeading: // GivePlaneHeading
+			size := 4 + // id
+				2 // heading
+			b = append(b[:0], make([]byte, size)...)
+			_, err = os.Stdin.Read(b)
+			if err != nil {
+				log.Fatalf("reading data: %v", err)
+			}
+			id := binary.LittleEndian.Uint32(b)
+			heading := state.Rot16(binary.LittleEndian.Uint16(b[4:]))
+			log.Printf("got GivePlaneHeading for plane %d: %v", id, heading)
+			lk.Lock()
+			i, ok := slices.BinarySearchFunc(s.Planes, id, func(p state.Plane, id uint32) int {
+				other := p.ID
+				if other < id {
+					return -1
+				}
+				if other == id {
+					return 0
+				}
+				return 1
+			})
+			if ok {
+				s.Planes[i].Turn(s.Now, heading)
+				*generation++
+				cond.Broadcast()
+				lk.Unlock()
+			} else {
+				lk.Unlock()
+				// probably the user giving orders to a plane that just landed or left the map
+				log.Println("got GivePlaneHeading for missing plane:", id)
+			}
+		default:
+			log.Fatalf("got invalid opcode: %v", op)
+		}
+	}
+}
 func u16(b []byte, x uint16) []byte {
 	binary.LittleEndian.PutUint16(b, x)
 	return b[2:]
@@ -112,3 +161,8 @@ func u32(b []byte, x uint32) []byte {
 	binary.LittleEndian.PutUint32(b, x)
 	return b[4:]
 }
+
+const (
+	_ = iota
+	GivePlaneHeading
+)
