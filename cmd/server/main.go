@@ -50,6 +50,19 @@ func mainRet() error {
 
 	var lastSentTick state.Time
 	var orig []byte
+	{
+		// Send game init packet
+		size := 4 + // TickRate
+			1 // SubPixelFactor
+		orig = append(orig[:0], make([]byte, size)...)
+		b := orig
+		b = u32(b, uint32(state.TickRate))
+		b[0] = state.SubPixelFactor
+		_, err := os.Stdout.Write(orig)
+		if err != nil {
+			return fmt.Errorf("writing: %w", err)
+		}
+	}
 	for {
 		lk.Lock()
 		for current.Now <= lastSentTick {

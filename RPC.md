@@ -6,6 +6,8 @@ The rest of the encoding is the concatenated values.
 
 All numbers are little endian encoded.
 
+All non whole byte values are rounded up to bytes sizes.
+
 It is asynchronous the server will apply changes as soon as possible when it receives them, because they run on the same machine over pipes they should never get widely out of sync.
 
 | OpCode | Name             | Arguments                           | Size |
@@ -20,3 +22,19 @@ Leave unused, the server crashes when sent this for debug purposes.
 ### 0x1 - GivePlaneHeading
 
 Give a new heading instruction to a plane, it will start turning in that direction and fly forward once the heading is reached.
+
+# RPC between go server and zig client
+
+It starts with a game init packet which has this layout:
+- `u32` tick rate in hz 
+- `u5` SubPixel factor, how many in game units make up a pixel (expressed as `1 << x`)
+
+After this it continously send game state packets:
+
+- `u32` now, current tick
+- `u32` `len(Planes)` then repeated for each plane:
+  - `u32` id, unique plane id
+  - `i32` x, in subpixel units
+  - `i32` y, in subpixel units
+  - `Rot16` wantHeading, heading the plane is turning towards
+  - `Rot16` heading, current heading of the plane
