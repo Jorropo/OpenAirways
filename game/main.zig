@@ -36,7 +36,7 @@ pub fn main() anyerror!void {
     var thread = try start_server(allocator, &proc, &state);
 
     state.initFinished.wait();
-    rl.setTargetFPS(@intCast(state.tickRate)); // FIXME: decouple FPS from underlying server
+    rl.setTargetFPS(60);
 
     const plane_img = rl.loadTexture("assets/plane_1.png");
     const plane_w: f32 = @floatFromInt(plane_img.width);
@@ -47,6 +47,7 @@ pub fn main() anyerror!void {
 
     while (!rl.windowShouldClose()) { // Detect window close button or ESC key
         rl.beginDrawing();
+        const frameClock: i64 = @intCast(state.timer.read());
 
         const mouse_pos = rl.getMousePosition();
         switch (input_state) {
@@ -59,7 +60,7 @@ pub fn main() anyerror!void {
             },
             .none => {
                 if (rl.isMouseButtonPressed(rl.MouseButton.mouse_button_left)) {
-                    const clicked = Plane.intersecting_plane(state.planes, plane_size, mouse_pos);
+                    const clicked = Plane.intersecting_plane(&state, plane_size, mouse_pos);
                     if (clicked) |p| {
                         _ = p;
                         // input_state = .{ .plane_target = .{
@@ -78,8 +79,11 @@ pub fn main() anyerror!void {
         rl.clearBackground(rl.Color.white);
 
         state.mu.lock();
+        const nanosPerTick = std.time.ns_per_s / state.tickRate;
+        const deltans = frameClock - @as(i64, state.now) * nanosPerTick;
+        state.deltaTimeInNonWholeTicks = @as(f32, @floatFromInt(deltans)) / @as(f32, @floatFromInt(nanosPerTick));
         for (state.planes) |plane| {
-            try plane.draw(allocator, plane_img, plane_size, true);
+            try plane.draw(allocator, &state, plane_img, plane_size, true);
         }
         state.mu.unlock();
     }
@@ -104,9 +108,9 @@ const Plane = struct {
     want_heading: u16 = 0,
     heading: u16 = 0,
 
-    fn draw(self: Plane, allocator: Allocator, img: rl.Texture, src: rl.Rectangle, draw_debug: bool) !void {
+    fn draw(self: Plane, allocator: Allocator, state: *State, img: rl.Texture, src: rl.Rectangle, draw_debug: bool) !void {
         const origin = rl.Vector2{ .x = src.width / 2, .y = src.height / 2 };
-        const loc = self.canvas_loc(src);
+        const loc = self.canvas_loc(src, state);
         rl.drawTexturePro(img, src, loc, origin, self.rot(), rl.Color.white);
 
         if (draw_debug) {
@@ -120,9 +124,9 @@ const Plane = struct {
         }
     }
 
-    fn intersecting_plane(planes: []Plane, src: rl.Rectangle, mouse_pos: rl.Vector2) ?Plane {
-        for (planes) |p| {
-            const loc = p.canvas_loc(src);
+    fn intersecting_plane(state: *State, src: rl.Rectangle, mouse_pos: rl.Vector2) ?Plane {
+        for (state.planes) |p| {
+            const loc = p.canvas_loc(src, state);
             const center = rl.Vector2{ .x = loc.x, .y = loc.y };
             if (rl.checkCollisionPointCircle(mouse_pos, center, src.width / 2)) {
                 return p;
@@ -132,10 +136,15 @@ const Plane = struct {
     }
 
     // returns the center position in screen-space of the plane.
-    fn canvas_loc(self: Plane, src: rl.Rectangle) rl.Rectangle {
+    fn canvas_loc(self: Plane, src: rl.Rectangle, state: *State) rl.Rectangle {
+        const rad = @as(f32, @floatFromInt(self.heading)) / 65536 * std.math.tau;
+        const distance = state.deltaTimeInNonWholeTicks * state.planeSpeed;
+        const x = self.pos.x + std.math.sin(rad) * distance;
+        const y = self.pos.y + std.math.cos(rad) * distance;
+        // FIXME: go does interpolation of turn radius when turning, zig don't but it still looks fine but might be worth it.
         return rl.Rectangle{
-            .x = (self.pos.x + canvas_w / 2) * screen_w / canvas_w,
-            .y = (-self.pos.y + canvas_h / 2) * screen_h / canvas_h,
+            .x = (x + canvas_w / 2) * screen_w / canvas_w,
+            .y = (-y + canvas_h / 2) * screen_h / canvas_h,
             .width = src.width,
             .height = src.height,
         };
@@ -147,7 +156,7 @@ const Plane = struct {
     }
 };
 
-const State = struct { now: u32 = 0, tickRate: u32 = 0, planes: []Plane = &[_]Plane{}, mu: Thread.Mutex = .{}, initFinished: Thread.Semaphore = .{} };
+const State = struct { now: u32 = 0, deltaTimeInNonWholeTicks: f32 = 0, tickRate: u32 = 0, planeSpeed: f32 = 0, planes: []Plane = &[_]Plane{}, mu: Thread.Mutex = .{}, initFinished: Thread.Semaphore = .{}, timer: std.time.Timer = undefined };
 
 fn start_server(allocator: Allocator, proc: *Child, state: *State) !Thread {
     const thread = try Thread.spawn(.{}, read_data, .{ allocator, proc, state });
@@ -158,18 +167,21 @@ fn read_data(allocator: Allocator, proc: *Child, state: *State) !void {
     try proc.spawn();
 
     const out = proc.stdout orelse return;
-    var header: [8]u8 = [_]u8{0} ** 8;
     var buffered_state = State{};
 
-    _ = try out.readAll(header[0..5]);
-    state.tickRate = r_u32(header[0..4]);
-    if (header[4] >= 1 << 5) {
+    var init = [_]u8{0} ** (4 + 1 + 4);
+    _ = try out.readAll(&init);
+    state.timer = try std.time.Timer.start(); // try to synchronize clock good enough with the server
+    state.tickRate = r_u32(init[0..4]);
+    if (init[4] >= 1 << 5) {
         return error.OutOfRange;
     }
-    const subPixelFactor: f32 = @floatFromInt(@as(i32, 1) << @intCast(header[4]));
+    const subPixelFactor: f32 = @floatFromInt(@as(i32, 1) << @intCast(init[4]));
+    state.planeSpeed = r_f32(init[5..9]) / subPixelFactor;
     state.initFinished.post();
 
     while (proc.term == null) {
+        var header: [8]u8 = [_]u8{0} ** 8;
         _ = out.readAll(&header) catch break;
 
         const plane_count = r_u32(header[4..8]);

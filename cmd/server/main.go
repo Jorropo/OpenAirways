@@ -53,11 +53,14 @@ func mainRet() error {
 	{
 		// Send game init packet
 		size := 4 + // TickRate
-			1 // SubPixel
+			1 + // SubPixel
+			4 // speed
 		orig = append(orig[:0], make([]byte, size)...)
 		b := orig
 		b = u32(b, uint32(state.TickRate))
 		b[0] = state.SubPixel
+		b = b[1:]
+		b = u32(b, uint32(state.Speed))
 		_, err := os.Stdout.Write(orig)
 		if err != nil {
 			return fmt.Errorf("writing: %w", err)
