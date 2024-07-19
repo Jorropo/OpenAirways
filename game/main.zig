@@ -47,31 +47,32 @@ const Plane = struct {
 const State = struct { now: u32 = 0, planes: []Plane = &[_]Plane{}, mu: std.Thread.Mutex = .{} };
 
 fn start_server(allocator: std.mem.Allocator, state: *State) !void {
-    const argv = [_][]const u8{"server"};
+    const thread = try std.Thread.spawn(.{}, read_data, .{ allocator, state });
+    _ = thread;
+}
+
+fn read_data(allocator: std.mem.Allocator, state: *State) !void {
+    const argv = [_][]const u8{"./server"};
+
     var child = Child.init(&argv, allocator);
     child.stdout_behavior = .Pipe;
     child.stderr_behavior = .Inherit;
 
-    const thread = try std.Thread.spawn(.{}, read_data, .{ allocator, &child, state });
-    _ = thread;
-}
-
-fn read_data(allocator: std.mem.Allocator, child: *Child, state: *State) !void {
     try child.spawn();
     if (child.stdout == null) {
-        unreachable;
+        @panic("no stdout found");
     }
 
     var header: [8]u8 = [_]u8{0} ** 8;
-    while (child.term) |_| {
-        _ = try child.stdout.?.read(&header);
+    while (child.term == null) {
+        const n = try child.stdout.?.read(&header);
+        print("read {} bytes", .{n});
         state.mu.lock();
         defer state.mu.unlock();
         // const now = r_u32(header[0..4]);
         const plane_count = r_u32(header[4..8]);
         const planes = try allocator.alloc(u8, 16 * plane_count);
         _ = try child.stdout.?.read(planes);
-        print("got {} planes and read", .{plane_count});
     }
 }
 
