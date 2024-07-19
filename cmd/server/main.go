@@ -125,7 +125,6 @@ func handleInbound(lk *sync.Mutex, cond *sync.Cond, s *state.State, generation *
 			}
 			id := binary.LittleEndian.Uint32(b)
 			heading := state.Rot16(binary.LittleEndian.Uint16(b[4:]))
-			log.Printf("got GivePlaneHeading for plane %d: %v", id, heading)
 			lk.Lock()
 			i, ok := slices.BinarySearchFunc(s.Planes, id, func(p state.Plane, id uint32) int {
 				other := p.ID

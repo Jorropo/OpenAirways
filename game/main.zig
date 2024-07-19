@@ -61,7 +61,6 @@ pub fn main() anyerror!void {
                     w_u32(b[4..8], input_state.plane_target.plane_id);
                     const h_rad = @mod(std.math.atan2(mouse_pos.x - input_state.plane_target.start.x, -mouse_pos.y - -input_state.plane_target.start.y) / std.math.tau, 1);
                     const heading: u16 = std.math.lossyCast(u16, h_rad * 65536);
-                    print("heading: {}\n", .{heading});
                     w_u16(b[8..10], heading);
                     _ = try in.writeAll(&b);
 
