@@ -83,7 +83,7 @@ const Plane = struct {
             .height = src.height,
         };
 
-        const rot: f32 = @floatFromInt(self.heading / 65536);
+        const rot: f32 = @as(f32, @floatFromInt(self.heading)) / 65536;
         rl.drawTexturePro(img, src, target, origin, rot * 360, rl.Color.white);
 
         if (draw_debug) {
