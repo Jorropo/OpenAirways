@@ -36,7 +36,7 @@ pub fn main() anyerror!void {
     var thread = try start_server(allocator, &proc, &state);
 
     state.initFinished.wait();
-    rl.setTargetFPS(60);
+    rl.setTargetFPS(rl.getMonitorRefreshRate(rl.getCurrentMonitor())); // FIXME: I hate this, do explicit sync &| vsync in the render loop.
 
     const plane_img = rl.loadTexture("assets/plane_1.png");
     const plane_w: f32 = @floatFromInt(plane_img.width);
@@ -156,7 +156,16 @@ const Plane = struct {
     }
 };
 
-const State = struct { now: u32 = 0, deltaTimeInNonWholeTicks: f32 = 0, tickRate: u32 = 0, planeSpeed: f32 = 0, planes: []Plane = &[_]Plane{}, mu: Thread.Mutex = .{}, initFinished: Thread.Semaphore = .{}, timer: std.time.Timer = undefined };
+const State = struct {
+    now: u32 = 0,
+    deltaTimeInNonWholeTicks: f32 = 0,
+    tickRate: u32 = 0,
+    planeSpeed: f32 = 0,
+    planes: []Plane = &[_]Plane{},
+    mu: Thread.Mutex = .{},
+    initFinished: Thread.Semaphore = .{},
+    timer: std.time.Timer = undefined,
+};
 
 fn start_server(allocator: Allocator, proc: *Child, state: *State) !Thread {
     const thread = try Thread.spawn(.{}, read_data, .{ allocator, proc, state });
