@@ -151,10 +151,6 @@ fn read_data(allocator: Allocator, proc: *Child, state: *State) !void {
         state.*.planes = buffered_state.planes;
         allocator.free(old);
         state.mu.unlock();
-
-        for (state.planes, 0..) |p, i| {
-            print("{}: plane {}: plane: {any}\n", .{ state.now, i, p });
-        }
     }
 
     allocator.free(buffered_state.planes);
