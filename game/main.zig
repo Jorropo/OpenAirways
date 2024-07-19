@@ -81,7 +81,7 @@ pub fn main() anyerror!void {
         state.mu.lock();
         const nanosPerTick = std.time.ns_per_s / state.tickRate;
         const deltans = frameClock - @as(i64, state.now) * nanosPerTick;
-        state.deltaTimeInNonWholeTicks = @as(f32, @floatFromInt(deltans)) / @as(f32, @floatFromInt(nanosPerTick));
+        state.deltaTicks = @as(f32, @floatFromInt(deltans)) / @as(f32, @floatFromInt(nanosPerTick));
         for (state.planes) |plane| {
             try plane.draw(allocator, &state, plane_img, plane_size, true);
         }
@@ -138,7 +138,7 @@ const Plane = struct {
     // returns the center position in screen-space of the plane.
     fn canvas_loc(self: Plane, src: rl.Rectangle, state: *State) rl.Rectangle {
         const rad = @as(f32, @floatFromInt(self.heading)) / 65536 * std.math.tau;
-        const distance = state.deltaTimeInNonWholeTicks * state.planeSpeed;
+        const distance = state.deltaTicks * state.planeSpeed;
         const x = self.pos.x + std.math.sin(rad) * distance;
         const y = self.pos.y + std.math.cos(rad) * distance;
         // FIXME: go does interpolation of turn radius when turning, zig don't but it still looks fine but might be worth it.
@@ -158,7 +158,7 @@ const Plane = struct {
 
 const State = struct {
     now: u32 = 0,
-    deltaTimeInNonWholeTicks: f32 = 0,
+    deltaTicks: f32 = 0,
     tickRate: u32 = 0,
     planeSpeed: f32 = 0,
     planes: []Plane = &[_]Plane{},
