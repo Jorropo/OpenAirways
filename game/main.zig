@@ -26,7 +26,7 @@ pub fn main() anyerror!void {
         }
     }
 
-    const server_args = [_][]const u8{ "./game-server", "-debug-tickmode", "slow" };
+    const server_args = [_][]const u8{ "./game-server", "-debug-tickmode", "realtime" };
     var proc = Child.init(&server_args, allocator);
     proc.stdout_behavior = .Pipe;
     proc.stderr_behavior = .Inherit;

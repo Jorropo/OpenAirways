@@ -98,7 +98,7 @@ func (s *State) Tick() {
 	s.Now++
 
 	// generating some traffic for testing purposes
-	if s.Now%8 == 1 {
+	if s.Now%32 == 1 {
 		s.Planes = append(s.Planes, Plane{
 			ID:   s.planeId,
 			time: s.Now,
@@ -112,7 +112,7 @@ func (s *State) Tick() {
 		// randomly make them do loops for testing purpose
 		if s.Planes[i].flyingStraight() {
 			xy, heading := s.Planes[i].Position(s.Now)
-			if abs(xy.Y) > 20 {
+			if (xy.Y > 100 && heading == 0) || (xy.Y < -100 && heading == tau/2) {
 				s.Planes[i].turn(s.Now, heading+tau/2)
 			}
 		}
