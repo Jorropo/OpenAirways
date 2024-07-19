@@ -10,6 +10,9 @@ const ArrayList = std.ArrayList;
 const screen_w = 1280;
 const screen_h = 720;
 
+const canvas_w: f32 = 960;
+const canvas_h: f32 = 560;
+
 pub fn main() anyerror!void {
     rl.initWindow(screen_w, screen_h, "hh-scope");
     defer rl.closeWindow();
@@ -40,8 +43,34 @@ pub fn main() anyerror!void {
     const plane_h: f32 = @floatFromInt(plane_img.height);
     const plane_size = rl.Rectangle{ .x = 0, .y = 0, .width = plane_w, .height = plane_h };
 
+    var input_state: InputState = .none;
+
     while (!rl.windowShouldClose()) { // Detect window close button or ESC key
         rl.beginDrawing();
+
+        const mouse_pos = rl.getMousePosition();
+        switch (input_state) {
+            .plane_target => {
+                if (rl.isMouseButtonReleased(rl.MouseButton.mouse_button_left)) {
+                    // emit heading change event
+                    input_state = .none;
+                    break;
+                }
+            },
+            .none => {
+                if (rl.isMouseButtonPressed(rl.MouseButton.mouse_button_left)) {
+                    const clicked = Plane.intersecting_plane(state.planes, plane_size, mouse_pos);
+                    if (clicked) |p| {
+                        _ = p;
+                        // input_state = .{ .plane_target = .{
+                        //     .plane_id = p.id,
+                        //     .start = mouse_pos,
+                        //     .current = mouse_pos,
+                        // } };
+                    }
+                }
+            },
+        }
 
         defer rl.endDrawing();
         defer rl.drawFPS(8, 8); // always draw last
@@ -50,7 +79,7 @@ pub fn main() anyerror!void {
 
         state.mu.lock();
         for (state.planes) |plane| {
-            try plane.draw(allocator, plane_img, plane_size, true, state.subPixelFactor);
+            try plane.draw(allocator, plane_img, plane_size, true);
         }
         state.mu.unlock();
     }
@@ -59,10 +88,15 @@ pub fn main() anyerror!void {
     thread.join();
 }
 
-const XY = struct { x: f32 = 0, y: f32 = 0 };
+const InputPlaneTarget = struct {
+    plane_id: u32,
+    start: rl.Vector2,
+    current: rl.Vector2,
+};
 
-const canvas_w: f32 = 960;
-const canvas_h: f32 = 560;
+const InputState = union(enum) { plane_target: InputPlaneTarget, none };
+
+const XY = struct { x: f32 = 0, y: f32 = 0 };
 
 const Plane = struct {
     id: u32 = 0,
@@ -70,32 +104,50 @@ const Plane = struct {
     want_heading: u16 = 0,
     heading: u16 = 0,
 
-    fn draw(self: Plane, allocator: Allocator, img: rl.Texture, src: rl.Rectangle, draw_debug: bool, subPixel: u5) !void {
+    fn draw(self: Plane, allocator: Allocator, img: rl.Texture, src: rl.Rectangle, draw_debug: bool) !void {
         const origin = rl.Vector2{ .x = src.width / 2, .y = src.height / 2 };
+        const loc = self.canvas_loc(src);
+        rl.drawTexturePro(img, src, loc, origin, self.rot(), rl.Color.white);
 
-        const subPixelFactor: f32 = @floatFromInt(@as(i32, 1) << subPixel);
+        if (draw_debug) {
+            var text_pos = rl.Vector2{ .x = loc.x + loc.width / 2, .y = loc.y - loc.height / 2 };
+            text_pos.x = std.math.floor(text_pos.x);
+            text_pos.y = std.math.floor(text_pos.y);
 
-        // convert XY to coords between 0 and screen size
-        // and flip so positive y is upwards
-        const target = rl.Rectangle{
-            .x = (self.pos.x / subPixelFactor + canvas_w / 2) * screen_w / canvas_w,
-            .y = (-self.pos.y / subPixelFactor + canvas_h / 2) * screen_h / canvas_h,
+            const debug_text = try std.fmt.allocPrintZ(allocator, "id={}, pos=[{d}, {d}]", .{ self.id, self.pos.x, self.pos.y });
+            rl.drawTextEx(rl.getFontDefault(), debug_text, text_pos, 16, 1, rl.Color.red);
+            allocator.free(debug_text);
+        }
+    }
+
+    fn intersecting_plane(planes: []Plane, src: rl.Rectangle, mouse_pos: rl.Vector2) ?Plane {
+        for (planes) |p| {
+            const loc = p.canvas_loc(src);
+            const center = rl.Vector2{ .x = loc.x, .y = loc.y };
+            if (rl.checkCollisionPointCircle(mouse_pos, center, src.width / 2)) {
+                return p;
+            }
+        }
+        return null;
+    }
+
+    // returns the center position in screen-space of the plane.
+    fn canvas_loc(self: Plane, src: rl.Rectangle) rl.Rectangle {
+        return rl.Rectangle{
+            .x = (self.pos.x + canvas_w / 2) * screen_w / canvas_w,
+            .y = (-self.pos.y + canvas_h / 2) * screen_h / canvas_h,
             .width = src.width,
             .height = src.height,
         };
+    }
 
-        const rot: f32 = @as(f32, @floatFromInt(self.heading)) / 65536;
-        rl.drawTexturePro(img, src, target, origin, rot * 360, rl.Color.white);
-
-        if (draw_debug) {
-            const pos = try std.fmt.allocPrintZ(allocator, "id={}, pos=[{d}, {d}]", .{ self.id, self.pos.x, self.pos.y });
-            rl.drawText(pos, @intFromFloat(target.x + target.width / 2), @intFromFloat(target.y - target.height / 2), 16, rl.Color.red);
-            allocator.free(pos);
-        }
+    fn rot(self: Plane) f32 {
+        const deg: f32 = @as(f32, @floatFromInt(self.heading)) / 65536;
+        return deg * 360;
     }
 };
 
-const State = struct { now: u32 = 0, tickRate: u32 = 0, subPixelFactor: u5 = 0, planes: []Plane = &[_]Plane{}, mu: Thread.Mutex = .{}, initFinished: Thread.Semaphore = .{} };
+const State = struct { now: u32 = 0, tickRate: u32 = 0, planes: []Plane = &[_]Plane{}, mu: Thread.Mutex = .{}, initFinished: Thread.Semaphore = .{} };
 
 fn start_server(allocator: Allocator, proc: *Child, state: *State) !Thread {
     const thread = try Thread.spawn(.{}, read_data, .{ allocator, proc, state });
@@ -114,7 +166,7 @@ fn read_data(allocator: Allocator, proc: *Child, state: *State) !void {
     if (header[4] >= 1 << 5) {
         return error.OutOfRange;
     }
-    state.subPixelFactor = @intCast(header[4]);
+    const subPixelFactor: f32 = @floatFromInt(@as(i32, 1) << @intCast(header[4]));
     state.initFinished.post();
 
     while (proc.term == null) {
@@ -142,8 +194,8 @@ fn read_data(allocator: Allocator, proc: *Child, state: *State) !void {
             const offset = plane_size * i;
 
             const id = r_u32(raw_planes[offset .. offset + 4]);
-            const x = r_f32(raw_planes[offset + 4 .. offset + 8]);
-            const y = r_f32(raw_planes[offset + 8 .. offset + 12]);
+            const x = r_f32(raw_planes[offset + 4 .. offset + 8]) / subPixelFactor;
+            const y = r_f32(raw_planes[offset + 8 .. offset + 12]) / subPixelFactor;
 
             const want_heading = r_u16(raw_planes[offset + 12 .. offset + 14]);
             const heading = r_u16(raw_planes[offset + 14 .. offset + 16]);
