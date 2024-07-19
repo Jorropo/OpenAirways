@@ -8,7 +8,7 @@ import (
 const (
 	TickRate      = 20
 	speed         = 40 / TickRate
-	turnRate      = tau / 1 / TickRate            // Rot16 / 10s / tickRate gives turn rate per tick
+	turnRate      = tau / 5 / TickRate            // Rot16 / 10s / tickRate gives turn rate per tick
 	turnPerimeter = tau / turnRate * speed        // how long a complete 360° turn would be
 	turnRadius    = turnPerimeter / (2 * math.Pi) // the length between the center of the turn circle and the plane
 )
@@ -85,6 +85,7 @@ func (p *Plane) tick(now Time) {
 func (p *Plane) turn(now Time, heading Rot16) {
 	p.p, p.heading = p.Position(now)
 	p.WantHeading = heading
+	p.time = now
 }
 
 type State struct {
