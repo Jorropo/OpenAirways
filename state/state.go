@@ -61,7 +61,7 @@ func (p *Plane) Position(now Time) (XY, Rot16) {
 	if diff < 0 {
 		arc = -arc
 	}
-	toDest := -toCenter + arc
+	toDest := toCenter + tau/2 + arc
 	xy := XY{
 		center_x + int32(turnRadius*math.Sin(toDest.Rad())),
 		center_y + int32(turnRadius*math.Cos(toDest.Rad())),
@@ -112,7 +112,7 @@ func (s *State) Tick() {
 		if s.Planes[i].flyingStraight() {
 			xy, heading := s.Planes[i].Position(s.Now)
 			if abs(xy.Y) > 20 {
-				s.Planes[i].turn(s.Now, -heading)
+				s.Planes[i].turn(s.Now, heading+tau/2)
 			}
 		}
 	}
