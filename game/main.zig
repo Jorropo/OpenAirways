@@ -29,10 +29,13 @@ pub fn main() anyerror!void {
     proc.stdout_behavior = .Pipe;
     proc.stderr_behavior = .Inherit;
     var state = State{};
+    state.mu.lock(); // starts locked and unlocks once the init packet has been received
 
     var thread = try start_server(allocator, &proc, &state);
 
-    rl.setTargetFPS(60);
+    state.mu.lock();
+    rl.setTargetFPS(@intCast(state.tickRate)); // FIXME: decouple FPS from underlying server
+    state.mu.unlock();
 
     const plane_img = rl.loadTexture("assets/plane_1.png");
     const plane_w: f32 = @floatFromInt(plane_img.width);
@@ -49,7 +52,7 @@ pub fn main() anyerror!void {
 
         state.mu.lock();
         for (state.planes) |plane| {
-            try plane.draw(allocator, plane_img, plane_size, true);
+            try plane.draw(allocator, plane_img, plane_size, true, state.subPixelFactor);
         }
         state.mu.unlock();
     }
@@ -69,14 +72,16 @@ const Plane = struct {
     want_heading: u16 = 0,
     heading: u16 = 0,
 
-    fn draw(self: Plane, allocator: Allocator, img: rl.Texture, src: rl.Rectangle, draw_debug: bool) !void {
+    fn draw(self: Plane, allocator: Allocator, img: rl.Texture, src: rl.Rectangle, draw_debug: bool, subPixel: u5) !void {
         const origin = rl.Vector2{ .x = src.width / 2, .y = src.height / 2 };
+
+        const subPixelFactor: f32 = @floatFromInt(@as(i32, 1) << subPixel);
 
         // convert XY to coords between 0 and screen size
         // and flip so positive y is upwards
         const target = rl.Rectangle{
-            .x = (self.pos.x + canvas_w / 2) * screen_w / canvas_w,
-            .y = (-self.pos.y + canvas_h / 2) * screen_h / canvas_h,
+            .x = (self.pos.x / subPixelFactor + canvas_w / 2) * screen_w / canvas_w,
+            .y = (-self.pos.y / subPixelFactor + canvas_h / 2) * screen_h / canvas_h,
             .width = src.width,
             .height = src.height,
         };
@@ -92,7 +97,7 @@ const Plane = struct {
     }
 };
 
-const State = struct { now: u32 = 0, planes: []Plane = &[_]Plane{}, mu: Thread.Mutex = .{} };
+const State = struct { now: u32 = 0, tickRate: u32 = 0, subPixelFactor: u5 = 0, planes: []Plane = &[_]Plane{}, mu: Thread.Mutex = .{} };
 
 fn start_server(allocator: Allocator, proc: *Child, state: *State) !Thread {
     const thread = try Thread.spawn(.{}, read_data, .{ allocator, proc, state });
@@ -102,11 +107,19 @@ fn start_server(allocator: Allocator, proc: *Child, state: *State) !Thread {
 fn read_data(allocator: Allocator, proc: *Child, state: *State) !void {
     try proc.spawn();
 
+    const out = proc.stdout orelse return;
     var header: [8]u8 = [_]u8{0} ** 8;
     var buffered_state = State{};
 
+    _ = try out.readAll(header[0..5]);
+    state.tickRate = r_u32(header[0..4]);
+    if (header[4] >= 1 << 5) {
+        return error.OutOfRange;
+    }
+    state.subPixelFactor = @intCast(header[4]);
+    state.mu.unlock();
+
     while (proc.term == null) {
-        const out = proc.stdout orelse break;
         _ = out.readAll(&header) catch break;
 
         const plane_count = r_u32(header[4..8]);
