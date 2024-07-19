@@ -51,23 +51,23 @@ pub fn main() anyerror!void {
 
         const mouse_pos = rl.getMousePosition();
         switch (input_state) {
-            .plane_target => {
+            .plane_target => blk: {
                 if (rl.isMouseButtonReleased(rl.MouseButton.mouse_button_left)) {
-                    // emit heading change event
+                    // TODO: emit heading change event
                     input_state = .none;
-                    break;
+                    break :blk;
                 }
+                input_state.plane_target.current = mouse_pos;
             },
             .none => {
                 if (rl.isMouseButtonPressed(rl.MouseButton.mouse_button_left)) {
                     const clicked = Plane.intersecting_plane(&state, plane_size, mouse_pos);
                     if (clicked) |p| {
-                        _ = p;
-                        // input_state = .{ .plane_target = .{
-                        //     .plane_id = p.id,
-                        //     .start = mouse_pos,
-                        //     .current = mouse_pos,
-                        // } };
+                        input_state = .{ .plane_target = .{
+                            .plane_id = p.id,
+                            .start = mouse_pos,
+                            .current = mouse_pos,
+                        } };
                     }
                 }
             },
@@ -82,9 +82,23 @@ pub fn main() anyerror!void {
         const nanosPerTick = std.time.ns_per_s / state.tickRate;
         const deltans = frameClock - @as(i64, state.now) * nanosPerTick;
         state.deltaTicks = @as(f32, @floatFromInt(deltans)) / @as(f32, @floatFromInt(nanosPerTick));
+
+        var highlighted_plane: Plane = undefined;
         for (state.planes) |plane| {
-            try plane.draw(allocator, &state, plane_img, plane_size, true);
+            var highlight = false;
+            if (input_state == .plane_target and input_state.plane_target.plane_id == plane.id) {
+                highlight = true;
+                highlighted_plane = plane;
+            }
+            try plane.draw(allocator, &state, plane_img, plane_size, highlight, true);
         }
+
+        if (input_state == .plane_target) {
+            const loc = highlighted_plane.canvas_loc(plane_size, &state);
+            const center = rl.Vector2{ .x = loc.x, .y = loc.y };
+            rl.drawLineEx(center, input_state.plane_target.current, 4, rl.Color.red);
+        }
+
         state.mu.unlock();
     }
 
@@ -108,13 +122,21 @@ const Plane = struct {
     want_heading: u16 = 0,
     heading: u16 = 0,
 
-    fn draw(self: Plane, allocator: Allocator, state: *State, img: rl.Texture, src: rl.Rectangle, draw_debug: bool) !void {
+    fn draw(self: Plane, allocator: Allocator, state: *State, img: rl.Texture, src: rl.Rectangle, highlight: bool, draw_debug: bool) !void {
         const origin = rl.Vector2{ .x = src.width / 2, .y = src.height / 2 };
         const loc = self.canvas_loc(src, state);
         rl.drawTexturePro(img, src, loc, origin, self.rot(), rl.Color.white);
 
+        // change to top right
+        var loc_origin = loc;
+        loc_origin.x -= loc.width / 2;
+        loc_origin.y -= loc.height / 2;
+        if (highlight) {
+            rl.drawRectangleRoundedLinesEx(loc_origin, 64, 64, 4, rl.Color.red);
+        }
+
         if (draw_debug) {
-            var text_pos = rl.Vector2{ .x = loc.x + loc.width / 2, .y = loc.y - loc.height / 2 };
+            var text_pos = rl.Vector2{ .x = loc_origin.x + loc.width, .y = loc_origin.y };
             text_pos.x = std.math.floor(text_pos.x);
             text_pos.y = std.math.floor(text_pos.y);
 
