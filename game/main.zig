@@ -29,13 +29,11 @@ pub fn main() anyerror!void {
     proc.stdout_behavior = .Pipe;
     proc.stderr_behavior = .Inherit;
     var state = State{};
-    state.mu.lock(); // starts locked and unlocks once the init packet has been received
 
     var thread = try start_server(allocator, &proc, &state);
 
-    state.mu.lock();
+    state.initFinished.wait();
     rl.setTargetFPS(@intCast(state.tickRate)); // FIXME: decouple FPS from underlying server
-    state.mu.unlock();
 
     const plane_img = rl.loadTexture("assets/plane_1.png");
     const plane_w: f32 = @floatFromInt(plane_img.width);
@@ -97,7 +95,7 @@ const Plane = struct {
     }
 };
 
-const State = struct { now: u32 = 0, tickRate: u32 = 0, subPixelFactor: u5 = 0, planes: []Plane = &[_]Plane{}, mu: Thread.Mutex = .{} };
+const State = struct { now: u32 = 0, tickRate: u32 = 0, subPixelFactor: u5 = 0, planes: []Plane = &[_]Plane{}, mu: Thread.Mutex = .{}, initFinished: Thread.Semaphore = .{} };
 
 fn start_server(allocator: Allocator, proc: *Child, state: *State) !Thread {
     const thread = try Thread.spawn(.{}, read_data, .{ allocator, proc, state });
@@ -117,7 +115,7 @@ fn read_data(allocator: Allocator, proc: *Child, state: *State) !void {
         return error.OutOfRange;
     }
     state.subPixelFactor = @intCast(header[4]);
-    state.mu.unlock();
+    state.initFinished.post();
 
     while (proc.term == null) {
         _ = out.readAll(&header) catch break;
