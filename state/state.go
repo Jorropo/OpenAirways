@@ -149,8 +149,9 @@ func (s *State) Apply(c rpcgame.Command) {
 // Copy copies o into s reusing s's storage
 func (s *State) Copy(o *State) {
 	*s = State{
-		Now:    o.Now,
-		Planes: append(s.Planes[:0], o.Planes...),
+		Now:     o.Now,
+		planeId: o.planeId,
+		Planes:  append(s.Planes[:0], o.Planes...),
 	}
 }
 

@@ -37,7 +37,9 @@ func mainRet() error {
 		return fmt.Errorf("unknown tick mode %q", tickMode)
 	}
 
-	var r rollback.Rollback
+	r := rollback.Rollback{
+		Players: 1,
+	}
 	var lk sync.Mutex
 	synchro := sync.Cond{L: &lk} // used with generation to know when to resend the state to the client
 

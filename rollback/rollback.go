@@ -49,9 +49,10 @@ func (r *Rollback) grabIdx(s state.Time) uint {
 
 func (r *Rollback) Do(cmd ...Command) {
 	var new bool
+	canBeAppliedOnTopOfLive := true
 	for _, c := range cmd {
 		if c.HappendAt <= r.Commit.Now {
-			panic("should be unreachable, netcode shouldn't let this through")
+			panic("should be unreachable, netcode shouldn't let this through: giving commands before commit")
 		}
 		idx := r.grabIdx(c.HappendAt)
 		ft := r.join[idx]
@@ -62,10 +63,17 @@ func (r *Rollback) Do(cmd ...Command) {
 			ft.cmds[i].Reliable = ft.cmds[i].Reliable || c.Reliable
 			continue // dups, don't reapply
 		}
+		canBeAppliedOnTopOfLive = canBeAppliedOnTopOfLive && i == len(ft.cmds) && c.HappendAt == r.Live.Now
+		if canBeAppliedOnTopOfLive {
+			r.Live.Apply(c.Op)
+		}
 		r.join[idx].cmds = slices.Insert(ft.cmds, i, command{c.Op, c.Reliable})
 		new = true
 	}
 	if new {
+		if canBeAppliedOnTopOfLive {
+			return
+		}
 		// replay with the new commands
 		tgt := r.Live.Now
 		r.Live.Copy(&r.Commit)
@@ -77,10 +85,11 @@ func (r *Rollback) Do(cmd ...Command) {
 		}
 		for tgt > r.Live.Now {
 			r.Live.Tick()
-			if uint(r.Live.Now) >= l(r.join) {
+			idx := uint(r.Live.Now - r.Commit.Now)
+			if idx >= l(r.join) {
 				continue
 			}
-			for _, c := range r.join[r.Live.Now].cmds {
+			for _, c := range r.join[idx].cmds {
 				r.Live.Apply(c.Op)
 			}
 		}
@@ -89,10 +98,13 @@ func (r *Rollback) Do(cmd ...Command) {
 
 func (r *Rollback) DoCommit(t state.Time) {
 	idx := r.grabIdx(t)
+	if r.join[idx].commited == 0 {
+		panic("should be unreachable, netcode shouldn't let this through: trying to commit an already commited tick")
+	}
 	r.join[idx].commited--
 	if r.join[idx].commited == 0 {
 		if idx != 0 {
-			panic("should be unreachable, netcode shouldn't let this through")
+			panic("should be unreachable, netcode shouldn't let this through: trying to commit out of order")
 		}
 		for _, c := range r.join[0].cmds {
 			r.Commit.Apply(c.Op)
