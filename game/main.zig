@@ -274,7 +274,7 @@ fn read_data(allocator: Allocator, proc: *Child, state: *State) !void {
 
 const RPC = enum(u32) {
     GivePlaneHeading = 0x1,
-    CommitTick = 0x80000000,
+    CommitTick = 0x8000,
 
     fn give_plane_heading(w: std.fs.File, plane_id: u32, start: V2, target: V2) !void {
         // convert from screen space to canvas space
@@ -282,10 +282,10 @@ const RPC = enum(u32) {
         const h_rad = @mod(math.atan2(v.x, v.y) / math.tau, 1);
         const heading: u16 = math.lossyCast(u16, h_rad * 65536);
 
-        var b = [_]u8{0} ** (4 + 4 + 2);
-        w_u32(b[0..4], @intFromEnum(RPC.GivePlaneHeading));
-        w_u32(b[4..8], plane_id);
-        w_u16(b[8..10], heading);
+        var b = [_]u8{0} ** (2 + 4 + 2);
+        w_u16(b[0..2], @intFromEnum(RPC.GivePlaneHeading));
+        w_u32(b[2..6], plane_id);
+        w_u16(b[6..8], heading);
 
         _ = try w.writeAll(&b);
     }

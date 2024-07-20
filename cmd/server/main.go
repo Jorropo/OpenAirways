@@ -53,7 +53,7 @@ func mainRet() error {
 			if counter == 0 {
 				if r.Live.Now%(8*state.TickRate) == 0 {
 					var c rpcgame.Command
-					b := u32(c[:], uint32(rpcgame.GivePlaneHeading))
+					b := u16(c[:], uint16(rpcgame.GivePlaneHeading))
 					b = u32(b, 1) // id
 					var heading state.Rot16
 					if r.Live.Now%(16*state.TickRate) == 0 {
@@ -131,19 +131,19 @@ func mainRet() error {
 func handleInbound(lk *sync.Mutex, synchro *sync.Cond, r *rollback.Rollback) {
 	var b []byte
 	for {
-		b := append(b[:0], make([]byte, 4)...)
+		b = makeBuffer(b, 2)
 		_, err := io.ReadFull(os.Stdin, b)
 		if err != nil {
 			log.Fatalf("reading header: %v", err)
 		}
-		op := rpcgame.OpCode(binary.LittleEndian.Uint32(b))
+		op := rpcgame.OpCode(binary.LittleEndian.Uint16(b))
 		switch op {
 		case rpcgame.GivePlaneHeading: // GivePlaneHeading
-			const size = 4 + // OpCode
+			const size = 2 + // OpCode
 				4 + // id
 				2 // heading
 			b = makeBuffer(b, size)
-			_, err = io.ReadFull(os.Stdin, b[4:])
+			_, err = io.ReadFull(os.Stdin, b[2:])
 			if err != nil {
 				log.Fatalf("reading data: %v", err)
 			}

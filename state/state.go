@@ -119,8 +119,8 @@ func (s *State) Tick() {
 
 func (s *State) Apply(c rpcgame.Command) {
 	b := c[:]
-	op := rpcgame.OpCode(binary.LittleEndian.Uint32(b))
-	b = b[4:]
+	op := rpcgame.OpCode(binary.LittleEndian.Uint16(b))
+	b = b[2:]
 	switch op {
 	case rpcgame.GivePlaneHeading:
 		id := binary.LittleEndian.Uint32(b)

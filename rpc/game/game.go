@@ -1,11 +1,11 @@
 // TODO: add parsing and validation in this package
 package rpcgame
 
-const maximumSize = 10 // GivePlaneHeading
+const maximumSize = 8 // GivePlaneHeading
 
 type Command [maximumSize]byte
 
-type OpCode uint32
+type OpCode uint16
 
 const (
 	_ OpCode = iota

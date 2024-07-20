@@ -1,6 +1,6 @@
 # RPC between zig client and go server
 
-The protocol is T\[L\]V, it always start with OpCode as `u32`.
+The protocol is T\[L\]V, it always start with OpCode as `u16`.
 
 The rest of the encoding is the concatenated values.
 
@@ -11,16 +11,16 @@ All non whole byte values are rounded up to bytes sizes.
 It is asynchronous the server will apply changes as soon as possible when it receives them, because they run on the same machine over pipes they should never get widely out of sync.
 
 - `OpCode < 2**31` are game OpCodes and can be sent over multiplayer.
-- `2 **31 <= OpCode < 2**31+2**30` are meta multiplayer, they are sent over multiplayer but do not control the game state.
-- `2**31+2**30 <= OpCode` are meta local, they are not sent over multiplayer.
+- `2 **15 <= OpCode < 2**15+2**14` are meta multiplayer, they are sent over multiplayer but do not control the game state.
+- `2**15+2**14 <= OpCode` are meta local, they are not sent over multiplayer.
 
 The game OpCodes need to be impotent on each tick.
 
-| OpCode     | Name             | Arguments                           | Size |
-|------------|------------------|-------------------------------------|------|
-| 0x0        | DoNotUse         |                                     | 0    |
-| 0x1        | GivePlaneHeading | `u32` plane id; `Rot16` new heading | 6    |
-| 0x80000000 | CommitTick       |                                     | 0    |
+| OpCode | Name             | Arguments                           | Size |
+|--------|------------------|-------------------------------------|------|
+| 0x0    | DoNotUse         |                                     | 0    |
+| 0x1    | GivePlaneHeading | `u32` plane id; `Rot16` new heading | 6    |
+| 0x8000 | CommitTick       |                                     | 0    |
 
 ### 0x0 - DoNotUse
 
