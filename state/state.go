@@ -1,8 +1,12 @@
 package state
 
 import (
+	"encoding/binary"
+	"log"
 	"math" // FIXME(@Jorropo): using float64 for Sin and Cos is likely not consistent based on hardware, if this cause desync replace with a pure uint16 implementation.
 	"slices"
+
+	rpcgame "github.com/Jorropo/hh-scope/rpc/game"
 )
 
 const (
@@ -10,15 +14,15 @@ const (
 	SubPixelFactor = 1 << SubPixel
 	TickRate       = 60
 	Speed          = 40 * SubPixelFactor / TickRate // in SubPixel/tick
-	turnRate       = tau / 10 / TickRate            // Rot16 / 10s / tickRate gives turn rate per tick
-	turnPerimeter  = tau / turnRate * Speed         // how long a complete 360° turn would be
+	turnRate       = Tau / 10 / TickRate            // Rot16 / 10s / tickRate gives turn rate per tick
+	turnPerimeter  = Tau / turnRate * Speed         // how long a complete 360° turn would be
 	turnRadius     = turnPerimeter / (2 * math.Pi)  // the length between the center of the turn circle and the plane
 )
 
 type Time uint32
 
-// tau is one full turn as a Rot16
-const tau = 1 << 16
+// Tau is one full turn as a Rot16
+const Tau = 1 << 16
 
 type Rot16 uint16
 
@@ -52,10 +56,10 @@ func (p *Plane) Position(now Time) (XY, Rot16) {
 	diff := int16(p.WantHeading - p.heading)
 	if diff < 0 {
 		// left
-		toCenter = p.heading - tau/4
+		toCenter = p.heading - Tau/4
 	} else {
 		// right
-		toCenter = p.heading + tau/4
+		toCenter = p.heading + Tau/4
 	}
 	center_x := p.pos.X + int32(turnRadius*math.Sin(toCenter.Rad()))
 	center_y := p.pos.Y + int32(turnRadius*math.Cos(toCenter.Rad()))
@@ -63,7 +67,7 @@ func (p *Plane) Position(now Time) (XY, Rot16) {
 	if diff < 0 {
 		arc = -arc
 	}
-	toDest := toCenter + tau/2 + arc
+	toDest := toCenter + Tau/2 + arc
 	xy := XY{
 		center_x + int32(turnRadius*math.Sin(toDest.Rad())),
 		center_y + int32(turnRadius*math.Cos(toDest.Rad())),
@@ -113,10 +117,41 @@ func (s *State) Tick() {
 	}
 }
 
-func (s *State) Clone() *State {
-	new := *s
-	new.Planes = slices.Clone(new.Planes)
-	return &new
+func (s *State) Apply(c rpcgame.Command) {
+	b := c[:]
+	op := rpcgame.OpCode(binary.LittleEndian.Uint32(b))
+	b = b[4:]
+	switch op {
+	case rpcgame.GivePlaneHeading:
+		id := binary.LittleEndian.Uint32(b)
+		heading := Rot16(binary.LittleEndian.Uint16(b[4:]))
+		i, ok := slices.BinarySearchFunc(s.Planes, id, func(p Plane, id uint32) int {
+			other := p.ID
+			if other < id {
+				return -1
+			}
+			if other == id {
+				return 0
+			}
+			return 1
+		})
+		if ok {
+			s.Planes[i].Turn(s.Now, heading)
+		} else {
+			// probably the user giving orders to a plane that just landed or left the map
+			log.Println("got GivePlaneHeading for missing plane:", id)
+		}
+	default:
+		log.Fatalf("got invalid opcode: %v", op)
+	}
+}
+
+// Copy copies o into s reusing s's storage
+func (s *State) Copy(o *State) {
+	*s = State{
+		Now:    o.Now,
+		Planes: append(s.Planes[:0], o.Planes...),
+	}
 }
 
 func abs[T ~int | ~int8 | ~int16 | ~int32 | ~int64 | ~float32 | ~float64](a T) T {

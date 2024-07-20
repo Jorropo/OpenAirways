@@ -4,12 +4,14 @@ import (
 	"encoding/binary"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
-	"slices"
 	"sync"
 	"time"
 
+	"github.com/Jorropo/hh-scope/rollback"
+	rpcgame "github.com/Jorropo/hh-scope/rpc/game"
 	"github.com/Jorropo/hh-scope/state"
 )
 
@@ -35,17 +37,36 @@ func mainRet() error {
 		return fmt.Errorf("unknown tick mode %q", tickMode)
 	}
 
-	var s state.State
-	var generation uint64 // generation is incremented on state modifications
+	var r rollback.Rollback
 	var lk sync.Mutex
 	synchro := sync.Cond{L: &lk} // used with generation to know when to resend the state to the client
 
-	go handleInbound(&lk, &synchro, &s, &generation)
+	go handleInbound(&lk, &synchro, &r)
 	go func() {
+		const delay = state.TickRate * 5 // for testing purposes commit with 5s of delay
+		counter := delay
 		for range ticks {
 			lk.Lock()
-			s.Tick()
-			generation++
+			r.TickLive()
+			if counter == 0 {
+				if r.Live.Now%(8*state.TickRate) == 0 {
+					var c rpcgame.Command
+					b := u32(c[:], uint32(rpcgame.GivePlaneHeading))
+					b = u32(b, 1) // id
+					var heading state.Rot16
+					if r.Live.Now%(16*state.TickRate) == 0 {
+						heading = state.Tau / 4
+					} else {
+						heading = state.Tau / 4 * 3
+					}
+					b = u16(b, uint16(heading))
+					r.Do(rollback.Command{Op: c, Reliable: true, HappendAt: r.Live.Now - delay/2}) // inject command in the past
+					log.Println("injected turn 2.5s in the past")
+				}
+				r.DoCommit(r.Commit.Now)
+			} else {
+				counter--
+			}
 			synchro.Broadcast()
 			lk.Unlock()
 		}
@@ -55,10 +76,10 @@ func mainRet() error {
 	var orig []byte
 	{
 		// Send game init packet
-		size := 4 + // TickRate
+		const size = 4 + // TickRate
 			1 + // SubPixel
 			4 // speed
-		orig = append(orig[:0], make([]byte, size)...)
+		orig = makeBuffer(orig, size)
 		b := orig
 		b = u32(b, uint32(state.TickRate))
 		b[0] = state.SubPixel
@@ -71,10 +92,10 @@ func mainRet() error {
 	}
 	for {
 		lk.Lock()
-		for generation == lastSentState {
+		for r.LiveGen == lastSentState {
 			synchro.Wait()
 		}
-		lastSentState = generation
+		lastSentState = r.LiveGen
 
 		size := 4 + // Now
 			4 + // len(Planes)
@@ -83,15 +104,15 @@ func mainRet() error {
 				4+ // y
 				2+ // wantHeading
 				2)* // heading
-				len(s.Planes)
-		orig := append(orig[:0], make([]byte, size)...)
+				uint(len(r.Live.Planes))
+		orig := makeBuffer(orig, size)
 		b := orig
 
-		b = u32(b, uint32(s.Now))
-		b = u32(b, uint32(len(s.Planes)))
-		for _, p := range s.Planes {
+		b = u32(b, uint32(r.Live.Now))
+		b = u32(b, uint32(len(r.Live.Planes)))
+		for _, p := range r.Live.Planes {
 			b = u32(b, p.ID)
-			xy, heading := p.Position(s.Now)
+			xy, heading := p.Position(r.Live.Now)
 			b = u32(b, uint32(xy.X))
 			b = u32(b, uint32(xy.Y))
 			b = u16(b, uint16(p.WantHeading))
@@ -105,47 +126,32 @@ func mainRet() error {
 	}
 }
 
-func handleInbound(lk *sync.Mutex, cond *sync.Cond, s *state.State, generation *uint64) {
+func handleInbound(lk *sync.Mutex, synchro *sync.Cond, r *rollback.Rollback) {
 	var b []byte
 	for {
-		header := append(b[:0], make([]byte, 4)...)
-		_, err := os.Stdin.Read(header)
+		b := append(b[:0], make([]byte, 4)...)
+		_, err := io.ReadFull(os.Stdin, b)
 		if err != nil {
 			log.Fatalf("reading header: %v", err)
 		}
-		op := binary.LittleEndian.Uint32(header)
+		op := rpcgame.OpCode(binary.LittleEndian.Uint32(b))
 		switch op {
-		case GivePlaneHeading: // GivePlaneHeading
-			size := 4 + // id
+		case rpcgame.GivePlaneHeading: // GivePlaneHeading
+			const size = 4 + // OpCode
+				4 + // id
 				2 // heading
-			b = append(b[:0], make([]byte, size)...)
-			_, err = os.Stdin.Read(b)
+			b = makeBuffer(b, size)
+			_, err = io.ReadFull(os.Stdin, b[4:])
 			if err != nil {
 				log.Fatalf("reading data: %v", err)
 			}
-			id := binary.LittleEndian.Uint32(b)
-			heading := state.Rot16(binary.LittleEndian.Uint16(b[4:]))
 			lk.Lock()
-			i, ok := slices.BinarySearchFunc(s.Planes, id, func(p state.Plane, id uint32) int {
-				other := p.ID
-				if other < id {
-					return -1
-				}
-				if other == id {
-					return 0
-				}
-				return 1
-			})
-			if ok {
-				s.Planes[i].Turn(s.Now, heading)
-				*generation++
-				cond.Broadcast()
-				lk.Unlock()
-			} else {
-				lk.Unlock()
-				// probably the user giving orders to a plane that just landed or left the map
-				log.Println("got GivePlaneHeading for missing plane:", id)
+			genIdBefore := r.LiveGen
+			r.Do(rollback.Command{Op: rpcgame.Command(b), Reliable: true, HappendAt: r.Live.Now})
+			if genIdBefore != r.LiveGen {
+				synchro.Broadcast()
 			}
+			lk.Unlock()
 		default:
 			log.Fatalf("got invalid opcode: %v", op)
 		}
@@ -161,7 +167,9 @@ func u32(b []byte, x uint32) []byte {
 	return b[4:]
 }
 
-const (
-	_ = iota
-	GivePlaneHeading
-)
+func makeBuffer(buf []byte, length uint) []byte {
+	if uint(cap(buf)) < length {
+		return append(buf[:cap(buf)], make([]byte, length-uint(cap(buf)))...)
+	}
+	return buf[:length]
+}
