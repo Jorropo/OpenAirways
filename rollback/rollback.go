@@ -107,6 +107,9 @@ func (r *Rollback) DoCommit(t state.Time) {
 			panic("should be unreachable, netcode shouldn't let this through: trying to commit out of order")
 		}
 		for _, c := range r.join[0].cmds {
+			if !c.Reliable {
+				continue // discard unreliable commands
+			}
 			r.Commit.Apply(c.Op)
 		}
 		r.Commit.Tick()
