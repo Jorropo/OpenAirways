@@ -1,20 +1,26 @@
 const rl = @import("raylib");
+const zm = @import("zmath");
+
 const std = @import("std");
 const print = std.debug.print;
+const math = std.math;
 
 const Thread = std.Thread;
 const Allocator = std.mem.Allocator;
 const Child = std.process.Child;
 const ArrayList = std.ArrayList;
 
-const screen_w = 1280;
-const screen_h = 720;
+const V2 = rl.Vector2;
 
-const canvas_w: f32 = 960;
-const canvas_h: f32 = 560;
+const screen = V2.init(1280, 720);
+const canvas = V2.init(960, 560);
 
 pub fn main() anyerror!void {
-    rl.initWindow(screen_w, screen_h, "hh-scope");
+    rl.setConfigFlags(rl.ConfigFlags{
+        .msaa_4x_hint = true,
+        .vsync_hint = true,
+    });
+    rl.initWindow(screen.x, screen.y, "hh-scope");
     defer rl.closeWindow();
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -36,12 +42,10 @@ pub fn main() anyerror!void {
 
     var thread = try start_server(allocator, &proc, &state);
 
-    rl.setTargetFPS(rl.getMonitorRefreshRate(rl.getCurrentMonitor())); // FIXME: I hate this, do explicit sync &| vsync in the render loop.
-
     const plane_img = rl.loadTexture("assets/plane_1.png");
     const plane_w: f32 = @floatFromInt(plane_img.width);
     const plane_h: f32 = @floatFromInt(plane_img.height);
-    const plane_size = rl.Rectangle{ .x = 0, .y = 0, .width = plane_w, .height = plane_h };
+    const plane_size = V2.init(plane_w, plane_h);
 
     var input_state: InputState = .none;
 
@@ -54,21 +58,20 @@ pub fn main() anyerror!void {
 
         const mouse_pos = rl.getMousePosition();
         switch (input_state) {
-            .plane_target => blk: {
+            .plane_target => |s| blk: {
                 if (rl.isMouseButtonReleased(rl.MouseButton.mouse_button_left)) {
-                    var b = [_]u8{0} ** (4 + 4 + 2); // opcode + id + heading
-                    w_u32(b[0..4], GivePlaneHeading);
-                    w_u32(b[4..8], input_state.plane_target.plane_id);
-                    const h_rad = @mod(std.math.atan2(mouse_pos.x - input_state.plane_target.start.x, -mouse_pos.y - -input_state.plane_target.start.y) / std.math.tau, 1);
-                    const heading: u16 = std.math.lossyCast(u16, h_rad * 65536);
-                    w_u16(b[8..10], heading);
-                    _ = try in.writeAll(&b);
-
                     input_state = .none;
+                    try RPC.give_plane_heading(
+                        in,
+                        s.plane_id,
+                        s.start,
+                        mouse_pos,
+                    );
                     break :blk;
                 }
                 input_state.plane_target.current = mouse_pos;
             },
+
             .none => {
                 if (rl.isMouseButtonPressed(rl.MouseButton.mouse_button_left)) {
                     const clicked = Plane.intersecting_plane(&state, plane_size, mouse_pos);
@@ -104,9 +107,8 @@ pub fn main() anyerror!void {
         }
 
         if (input_state == .plane_target) {
-            const loc = highlighted_plane.canvas_loc(plane_size, &state);
-            const center = rl.Vector2{ .x = loc.x, .y = loc.y };
-            rl.drawLineEx(center, input_state.plane_target.current, 4, rl.Color.red);
+            const loc = highlighted_plane.canvas_loc(&state);
+            rl.drawLineEx(loc, input_state.plane_target.current, 4, rl.Color.red);
         }
 
         state.mu.unlock();
@@ -118,49 +120,52 @@ pub fn main() anyerror!void {
 
 const InputPlaneTarget = struct {
     plane_id: u32,
-    start: rl.Vector2,
-    current: rl.Vector2,
+    start: V2,
+    current: V2,
 };
 
-const InputState = union(enum) { plane_target: InputPlaneTarget, none };
-
-const XY = struct { x: f32 = 0, y: f32 = 0 };
+const InputState = union(enum) {
+    plane_target: InputPlaneTarget,
+    none,
+};
 
 const Plane = struct {
     id: u32 = 0,
-    pos: XY = .{},
+    pos: V2 = .{},
     want_heading: u16 = 0,
     heading: u16 = 0,
 
-    fn draw(self: Plane, allocator: Allocator, state: *State, img: rl.Texture, src: rl.Rectangle, highlight: bool, draw_debug: bool) !void {
-        const origin = rl.Vector2{ .x = src.width / 2, .y = src.height / 2 };
-        const loc = self.canvas_loc(src, state);
-        rl.drawTexturePro(img, src, loc, origin, self.rot(), rl.Color.white);
+    fn draw(self: Plane, allocator: Allocator, state: *State, img: rl.Texture, size: V2, highlight: bool, draw_debug: bool) !void {
+        const full_image = rect(V2.zero(), size);
+        const origin = size.scale(0.5);
+        const center = self.canvas_loc(state);
 
-        // change to top right
-        var loc_origin = loc;
-        loc_origin.x -= loc.width / 2;
-        loc_origin.y -= loc.height / 2;
+        img.drawPro(
+            full_image,
+            rect(center, size),
+            origin,
+            self.rot(),
+            rl.Color.white,
+        );
+
+        const top_left = center.subtract(origin);
+        const top_right = top_left.add(V2.init(size.x, 0));
+
         if (highlight) {
-            rl.drawRectangleRoundedLinesEx(loc_origin, 64, 64, 4, rl.Color.red);
+            rl.drawRectangleRoundedLinesEx(rect(top_left, size), 64, 64, 4, rl.Color.red);
         }
 
         if (draw_debug) {
-            var text_pos = rl.Vector2{ .x = loc_origin.x + loc.width, .y = loc_origin.y };
-            text_pos.x = std.math.floor(text_pos.x);
-            text_pos.y = std.math.floor(text_pos.y);
-
             const debug_text = try std.fmt.allocPrintZ(allocator, "id={}, pos=[{d}, {d}]", .{ self.id, self.pos.x, self.pos.y });
-            rl.drawTextEx(rl.getFontDefault(), debug_text, text_pos, 16, 1, rl.Color.red);
+            rl.drawTextEx(rl.getFontDefault(), debug_text, top_right, 16, 1, rl.Color.red);
             allocator.free(debug_text);
         }
     }
 
-    fn intersecting_plane(state: *State, src: rl.Rectangle, mouse_pos: rl.Vector2) ?Plane {
+    fn intersecting_plane(state: *State, size: V2, mouse_pos: V2) ?Plane {
         for (state.planes) |p| {
-            const loc = p.canvas_loc(src, state);
-            const center = rl.Vector2{ .x = loc.x, .y = loc.y };
-            if (rl.checkCollisionPointCircle(mouse_pos, center, src.width / 2)) {
+            const loc = p.canvas_loc(state);
+            if (rl.checkCollisionPointCircle(mouse_pos, loc, size.x / 2)) {
                 return p;
             }
         }
@@ -168,18 +173,15 @@ const Plane = struct {
     }
 
     // returns the center position in screen-space of the plane.
-    fn canvas_loc(self: Plane, src: rl.Rectangle, state: *State) rl.Rectangle {
-        const rad = @as(f32, @floatFromInt(self.heading)) / 65536 * std.math.tau;
+    fn canvas_loc(self: Plane, state: *State) V2 {
+        const rad = @as(f32, @floatFromInt(self.heading)) / 65536 * math.tau;
         const distance = state.deltaTicks * state.planeSpeed;
-        const x = self.pos.x + std.math.sin(rad) * distance;
-        const y = self.pos.y + std.math.cos(rad) * distance;
-        // FIXME: go does interpolation of turn radius when turning, zig don't but it still looks fine but might be worth it.
-        return rl.Rectangle{
-            .x = (x + canvas_w / 2) * screen_w / canvas_w,
-            .y = (-y + canvas_h / 2) * screen_h / canvas_h,
-            .width = src.width,
-            .height = src.height,
-        };
+
+        const travelled = V2.init(math.sin(rad), math.cos(rad)).scale(distance);
+        const interpolated = self.pos.add(travelled).multiply(flip_y);
+        const in_screen_space = interpolated.add(canvas.scale(0.5)).multiply(screen).divide(canvas);
+
+        return in_screen_space;
     }
 
     fn rot(self: Plane) f32 {
@@ -255,8 +257,7 @@ fn read_data(allocator: Allocator, proc: *Child, state: *State) !void {
             const heading = r_u16(b[14..16]);
 
             buffered_state.planes[i].id = id;
-            buffered_state.planes[i].pos.x = x;
-            buffered_state.planes[i].pos.y = y;
+            buffered_state.planes[i].pos = V2.init(x, y);
             buffered_state.planes[i].want_heading = want_heading;
             buffered_state.planes[i].heading = heading;
         }
@@ -270,6 +271,25 @@ fn read_data(allocator: Allocator, proc: *Child, state: *State) !void {
 
     allocator.free(buffered_state.planes);
 }
+
+const RPC = enum(u32) {
+    GivePlaneHeading = 0x1,
+    CommitTick = 0x80000000,
+
+    fn give_plane_heading(w: std.fs.File, plane_id: u32, start: V2, target: V2) !void {
+        // convert from screen space to canvas space
+        const v = target.subtract(start).multiply(flip_y);
+        const h_rad = @mod(math.atan2(v.x, v.y) / math.tau, 1);
+        const heading: u16 = math.lossyCast(u16, h_rad * 65536);
+
+        var b = [_]u8{0} ** (4 + 4 + 2);
+        w_u32(b[0..4], @intFromEnum(RPC.GivePlaneHeading));
+        w_u32(b[4..8], plane_id);
+        w_u16(b[8..10], heading);
+
+        _ = try w.writeAll(&b);
+    }
+};
 
 fn r_u16(b: *const [2]u8) u16 {
     return std.mem.readInt(u16, b, .little);
@@ -295,5 +315,8 @@ fn w_u32(b: *[4]u8, x: u32) void {
     std.mem.writeInt(u32, b, x, .little);
 }
 
-// FIXME: enum this ¿
-const GivePlaneHeading = 1;
+const flip_y = V2.init(1, -1);
+
+fn rect(pos: V2, size: V2) rl.Rectangle {
+    return rl.Rectangle.init(pos.x, pos.y, size.x, size.y);
+}
