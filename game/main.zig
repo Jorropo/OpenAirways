@@ -63,7 +63,6 @@ pub fn main() anyerror!void {
     game.initFinished.wait();
     server_args[0] = programName; // restore for argsFree
     std.process.argsFree(allocator, server_args);
-    const in = game.server_proc.stdin orelse return;
 
     while (!rl.windowShouldClose()) { // Detect window close button or ESC key
         rl.beginDrawing();
@@ -74,8 +73,7 @@ pub fn main() anyerror!void {
             .plane_target => |s| blk: {
                 if (rl.isMouseButtonReleased(rl.MouseButton.mouse_button_left)) {
                     input_state = .none;
-                    try RPC.give_plane_heading(
-                        in,
+                    try game.give_plane_heading(
                         s.plane_id,
                         s.start,
                         mouse_pos,
@@ -110,6 +108,7 @@ pub fn main() anyerror!void {
         state.deltaTicks = @as(f32, @floatFromInt(deltans)) / @as(f32, @floatFromInt(nanosPerTick));
 
         var highlighted_plane: Plane = undefined;
+
         for (state.planes) |plane| {
             var highlight = false;
             if (input_state == .plane_target and input_state.plane_target.plane_id == plane.id) {
@@ -191,6 +190,7 @@ const Plane = struct {
         const distance = state.deltaTicks * state.planeSpeed;
 
         const travelled = V2.init(math.sin(rad), math.cos(rad)).scale(distance);
+
         const interpolated = self.pos.add(travelled).multiply(flip_y);
         const in_screen_space = interpolated.add(canvas.scale(0.5)).multiply(screen).divide(canvas);
 
@@ -230,6 +230,12 @@ const Game = struct {
         GameInit = 43,
         // StateUpdate = dynamic,
         MapResize = 18,
+
+        const plane_size = 4 + // id
+            4 + // x
+            4 + // y
+            2 + // wantHeading
+            2; // heading
     };
 
     fn start_server(self: *Game) !void {
@@ -260,9 +266,12 @@ const Game = struct {
         while (proc.term == null) {
             var header: [10]u8 = [_]u8{0} ** 10;
             _ = out.readAll(&header) catch break;
+            const op = r_u16(header[0..2]);
+            if (op == 0) break;
 
-            if (r_u16(header[0..2]) != @intFromEnum(Game.OpCode.StateUpdate))
+            if (op != @intFromEnum(Game.OpCode.StateUpdate)) {
                 @panic("unsupported op code");
+            }
             const now = r_u32(header[2..6]);
             const plane_count = r_u32(header[6..10]);
 
@@ -290,7 +299,7 @@ const Game = struct {
             state.planes = try self.allocator.alloc(Plane, plane_count);
 
             for (0..plane_count) |i| {
-                const offset = state_plane_size * i;
+                const offset = PacketSize.plane_size * i;
 
                 const b = raw_planes[offset..];
                 const id = r_u32(b[0..4]);
@@ -307,8 +316,21 @@ const Game = struct {
             }
         }
 
-        print("closing\n", .{});
         self.allocator.free(state.planes);
+    }
+
+    fn give_plane_heading(self: Game, plane_id: u32, start: V2, target: V2) !void {
+        // convert from screen space to canvas space
+        const v = target.subtract(start).multiply(flip_y);
+        const h_rad = @mod(math.atan2(v.x, v.y) / math.tau, 1);
+        const heading: u16 = math.lossyCast(u16, h_rad * 65536);
+
+        var b = [_]u8{0} ** (2 + 4 + 2);
+        w_u16(b[0..2], @intFromEnum(OpCode.GivePlaneHeading));
+        w_u32(b[2..6], plane_id);
+        w_u16(b[6..8], heading);
+
+        _ = try self.server_proc.stdin.?.writeAll(&b);
     }
 };
 
@@ -318,30 +340,6 @@ const State = struct {
     tickRate: u32 = 0,
     planeSpeed: f32 = 0,
     planes: []Plane = &[_]Plane{},
-};
-
-const state_plane_size = 4 + // id
-    4 + // x
-    4 + // y
-    2 + // wantHeading
-    2; // heading
-
-const RPC = enum(u32) {
-    GivePlaneHeading = 0x1,
-
-    fn give_plane_heading(w: std.fs.File, plane_id: u32, start: V2, target: V2) !void {
-        // convert from screen space to canvas space
-        const v = target.subtract(start).multiply(flip_y);
-        const h_rad = @mod(math.atan2(v.x, v.y) / math.tau, 1);
-        const heading: u16 = math.lossyCast(u16, h_rad * 65536);
-
-        var b = [_]u8{0} ** (2 + 4 + 2);
-        w_u16(b[0..2], @intFromEnum(RPC.GivePlaneHeading));
-        w_u32(b[2..6], plane_id);
-        w_u16(b[6..8], heading);
-
-        _ = try w.writeAll(&b);
-    }
 };
 
 fn r_u16(b: *const [2]u8) u16 {

@@ -109,7 +109,7 @@ func (s *State) Tick() {
 	s.Now++
 
 	// generating some traffic for testing purposes
-	if s.Now%(TickRate*5) == 1 && len(s.Planes) < 2 {
+	if s.Now%(TickRate*5) == 1 && len(s.Planes) < 1 {
 		s.Planes = append(s.Planes, Plane{
 			ID:   s.nextPlaneId,
 			time: s.Now,
