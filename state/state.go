@@ -1,7 +1,10 @@
 package state
 
 import (
+	"bytes"
 	"encoding/binary"
+	"fmt"
+	"io"
 	"log"
 	"math" // FIXME(@Jorropo): using float64 for Sin and Cos is likely not consistent based on hardware, if this cause desync replace with a pure uint16 implementation.
 	"slices"
@@ -21,14 +24,10 @@ const (
 
 type Time uint32
 
-// Tau is one full turn as a Rot16
-const Tau = 1 << 16
+// FIXME: completely move theses away
+const Tau = rpcgame.Tau
 
-type Rot16 uint16
-
-func (r Rot16) Rad() float64 {
-	return float64(r) / 65536 * math.Pi * 2
-}
+type Rot16 = rpcgame.Rot16
 
 type XY struct {
 	X, Y int32
@@ -95,9 +94,9 @@ func (p *Plane) Turn(now Time, heading Rot16) {
 }
 
 type State struct {
-	planeId uint32
-	Now     Time
-	Planes  []Plane
+	nextPlaneId uint32 // monotonic increasing plane id
+	Now         Time
+	Planes      []Plane
 }
 
 func (s *State) Tick() {
@@ -106,10 +105,10 @@ func (s *State) Tick() {
 	// generating some traffic for testing purposes
 	if s.Now%(TickRate*5) == 1 && len(s.Planes) < 2 {
 		s.Planes = append(s.Planes, Plane{
-			ID:   s.planeId,
+			ID:   s.nextPlaneId,
 			time: s.Now,
 		})
-		s.planeId++
+		s.nextPlaneId++
 	}
 
 	for i := range s.Planes {
@@ -149,10 +148,84 @@ func (s *State) Apply(c rpcgame.Command) {
 // Copy copies o into s reusing s's storage
 func (s *State) Copy(o *State) {
 	*s = State{
-		Now:     o.Now,
-		planeId: o.planeId,
-		Planes:  append(s.Planes[:0], o.Planes...),
+		Now:         o.Now,
+		nextPlaneId: o.nextPlaneId,
+		Planes:      append(s.Planes[:0], o.Planes...),
 	}
+}
+
+// Read reads the wire binary representation from r and writes to s.
+func (s *State) Read(r io.Reader) error {
+	// FIXME: this is very trustfull and will panic or generate panics down the line if the input is malicious
+	var b [max(headerSize, planeSize)]byte
+	_, err := io.ReadFull(r, b[:headerSize])
+	if err != nil {
+		return fmt.Errorf("reading When and len(Planes): %w", err)
+	}
+	s.Now = Time(binary.LittleEndian.Uint32(b[:]))
+	s.nextPlaneId = binary.LittleEndian.Uint32(b[4:])
+	nPlanes := binary.LittleEndian.Uint32(b[8:])
+
+	s.Planes = slices.Grow(s.Planes[:0], int(nPlanes))
+	for range nPlanes {
+		_, err = io.ReadFull(r, b[:planeSize])
+		if err != nil {
+			return fmt.Errorf("reading Plane: %w", err)
+		}
+		s.Planes = append(s.Planes, Plane{
+			ID:          binary.LittleEndian.Uint32(b[:]),
+			time:        Time(binary.LittleEndian.Uint32(b[4:])),
+			pos:         XY{int32(binary.LittleEndian.Uint32(b[8:])), int32(binary.LittleEndian.Uint32(b[12:]))},
+			WantHeading: Rot16(binary.LittleEndian.Uint16(b[16:])),
+			heading:     Rot16(binary.LittleEndian.Uint16(b[18:])),
+		})
+	}
+	return nil
+}
+
+func (s *State) UnmarshalBinary(b []byte) error {
+	r := bytes.NewReader(b)
+	if err := s.Read(r); err != nil {
+		return err
+	}
+	if r.Len() != 0 {
+		return fmt.Errorf("extra trailing bytes in input: %d", r.Len())
+	}
+	return nil
+}
+
+const headerSize = 4 + // Now
+	4 + // nextPlaneId
+	4 // len(Planes)
+
+const planeSize = 4 + // id
+	4 + // now (last materialized time)
+	4 + // x
+	4 + // y
+	2 + // wantHeading
+	2 // heading
+
+// AppendMarshalBinary appends the wire binary representation of s to in and returns the result.
+func (s *State) AppendMarshalBinary(in []byte) []byte {
+	size := headerSize + planeSize*len(s.Planes)
+	r := append(in, make([]byte, size)...)
+	b := r[len(in):]
+
+	b = u32(b, uint32(s.Now))
+	b = u32(b, uint32(len(s.Planes)))
+	for _, p := range s.Planes {
+		b = u32(b, p.ID)
+		xy, heading := p.Position(s.Now)
+		b = u32(b, uint32(xy.X))
+		b = u32(b, uint32(xy.Y))
+		b = u16(b, uint16(p.WantHeading))
+		b = u16(b, uint16(heading))
+	}
+	return r
+}
+
+func (s *State) MarshalBinary() ([]byte, error) {
+	return s.AppendMarshalBinary(nil), nil
 }
 
 func abs[T ~int | ~int8 | ~int16 | ~int32 | ~int64 | ~float32 | ~float64](a T) T {
@@ -160,4 +233,14 @@ func abs[T ~int | ~int8 | ~int16 | ~int32 | ~int64 | ~float32 | ~float64](a T) T
 		a = -a
 	}
 	return a
+}
+
+func u16(b []byte, x uint16) []byte {
+	binary.LittleEndian.PutUint16(b, x)
+	return b[2:]
+}
+
+func u32(b []byte, x uint32) []byte {
+	binary.LittleEndian.PutUint32(b, x)
+	return b[4:]
 }

@@ -1,16 +1,22 @@
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"os"
-	"sync"
-	"time"
+	"strings"
 
-	"github.com/Jorropo/hh-scope/rollback"
+	"github.com/Jorropo/hh-scope/netcode"
+	"github.com/libp2p/go-libp2p"
+	"github.com/libp2p/go-libp2p/core/event"
+	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/libp2p/go-libp2p/p2p/transport/tcp"
+	"github.com/multiformats/go-multiaddr"
+
 	rpcgame "github.com/Jorropo/hh-scope/rpc/game"
 	"github.com/Jorropo/hh-scope/state"
 )
@@ -23,82 +29,94 @@ func main() {
 }
 
 func mainRet() error {
-	var tickMode string
-	flag.StringVar(&tickMode, "debug-tickmode", "realtime", "tick mode is a debug flag that change the real world tick speed (realtime, slow (1hz))")
+	var targetStr string
+	flag.StringVar(&targetStr, "target", "", "target multiaddr to connect to, leave empty for server")
 	flag.Parse()
 
-	var ticks <-chan time.Time
-	switch tickMode {
-	case "realtime":
-		ticks = time.Tick(time.Second / state.TickRate)
-	case "slow":
-		ticks = time.Tick(time.Second)
-	default:
-		return fmt.Errorf("unknown tick mode %q", tickMode)
+	opts := []libp2p.Option{
+		libp2p.Transport(tcp.NewTCPTransport), // only use TCP because we are using the linux process teardown to close the connection and QUIC runs in userland, could be changed.
 	}
 
-	r := rollback.Rollback{
-		Players: 1,
-	}
-	var lk sync.Mutex
-	synchro := sync.Cond{L: &lk} // used with generation to know when to resend the state to the client
+	var info peer.AddrInfo
+	if targetStr == "" {
+		log.Println("starting as server")
+		opts = append(opts, libp2p.ListenAddrStrings("/ip4/0.0.0.0/tcp/0", "/ip6/::/tcp/0"))
+	} else {
+		// raw handling the string since it's 4am and I want to get this over with
+		strs := strings.Split(targetStr, "/p2p/")
+		if len(strs) != 2 {
+			return fmt.Errorf("failing to parse target, too many p2p components")
+		}
 
-	go handleInbound(&lk, &synchro, &r)
+		var err error
+		info.ID, err = peer.Decode(strs[1])
+		if err != nil {
+			return fmt.Errorf("parsing target's peerid: %w", err)
+		}
+
+		maddr, err := multiaddr.NewMultiaddr(strs[0])
+		if err != nil {
+			return fmt.Errorf("parsing target's maddr: %w", err)
+		}
+		info.Addrs = []multiaddr.Multiaddr{maddr}
+	}
+
+	h, err := libp2p.New(opts...)
+	if err != nil {
+		return fmt.Errorf("creating host: %w", err)
+	}
+
+	bus, err := h.EventBus().Subscribe(&event.EvtLocalAddressesUpdated{})
+	if err != nil {
+		return err
+	}
 	go func() {
-		const delay = state.TickRate * 5 // for testing purposes commit with 5s of delay
-		counter := delay
-		for range ticks {
-			lk.Lock()
-			r.TickLive()
-			if counter == 0 {
-				if r.Live.Now%(8*state.TickRate) == 0 {
-					var c rpcgame.Command
-					b := u16(c[:], uint16(rpcgame.GivePlaneHeading))
-					b = u32(b, 1) // id
-					var heading state.Rot16
-					if r.Live.Now%(16*state.TickRate) == 0 {
-						heading = state.Tau / 4
-					} else {
-						heading = state.Tau / 4 * 3
-					}
-					b = u16(b, uint16(heading))
-					r.Do(rollback.Command{Op: c, Reliable: true, HappendAt: r.Live.Now - delay/2}) // inject command in the past
-					log.Println("injected turn 2.5s in the past")
+		id := "/p2p/" + h.ID().String()
+		for e := range bus.Out() {
+			e := e.(event.EvtLocalAddressesUpdated)
+			var a strings.Builder
+			a.WriteString("Listening on:\n")
+			for _, addr := range e.Current {
+				switch addr.Action {
+				case event.Added, event.Maintained:
+				default:
+					continue
 				}
-				r.DoCommit(r.Commit.Now)
-			} else {
-				counter--
+				a.WriteByte('\t')
+				a.WriteString(addr.Address.String())
+				a.WriteString(id)
+				a.WriteByte('\n')
 			}
-			synchro.Broadcast()
-			lk.Unlock()
+			log.Print(a.String())
 		}
 	}()
 
-	var lastSentState uint64
-	var orig []byte
+	if targetStr != "" {
+		err = h.Connect(context.TODO(), info)
+		if err != nil {
+			return fmt.Errorf("connecting to server: %w", err)
+		}
+	}
+
+	var sendReuse []byte
 	{
 		// Send game init packet
 		const size = 4 + // TickRate
 			1 + // SubPixel
 			4 // speed
-		orig = makeBuffer(orig, size)
-		b := orig
+		sendReuse = makeBuffer(sendReuse, size)
+		b := sendReuse
 		b = u32(b, uint32(state.TickRate))
 		b[0] = state.SubPixel
 		b = b[1:]
 		b = u32(b, uint32(state.Speed))
-		_, err := os.Stdout.Write(orig)
+		_, err := os.Stdout.Write(sendReuse)
 		if err != nil {
 			return fmt.Errorf("writing: %w", err)
 		}
 	}
-	for {
-		lk.Lock()
-		for r.LiveGen == lastSentState {
-			synchro.Wait()
-		}
-		lastSentState = r.LiveGen
 
+	n, err := netcode.New(h, func(s *state.State, unlock func()) {
 		size := 4 + // Now
 			4 + // len(Planes)
 			(4+ // id
@@ -106,59 +124,53 @@ func mainRet() error {
 				4+ // y
 				2+ // wantHeading
 				2)* // heading
-				uint(len(r.Live.Planes))
-		orig := makeBuffer(orig, size)
+				uint(len(s.Planes))
+		orig := makeBuffer(sendReuse, size)
 		b := orig
 
-		b = u32(b, uint32(r.Live.Now))
-		b = u32(b, uint32(len(r.Live.Planes)))
-		for _, p := range r.Live.Planes {
+		b = u32(b, uint32(s.Now))
+		b = u32(b, uint32(len(s.Planes)))
+		for _, p := range s.Planes {
 			b = u32(b, p.ID)
-			xy, heading := p.Position(r.Live.Now)
+			xy, heading := p.Position(s.Now)
 			b = u32(b, uint32(xy.X))
 			b = u32(b, uint32(xy.Y))
 			b = u16(b, uint16(p.WantHeading))
 			b = u16(b, uint16(heading))
 		}
-		lk.Unlock()
+		unlock()
+
 		_, err := os.Stdout.Write(orig)
 		if err != nil {
-			return fmt.Errorf("writing: %w", err)
+			log.Fatalf("writing to zig client: %s", err)
 		}
+	}, info.ID)
+	if err != nil {
+		return fmt.Errorf("setting up netcode: %w", err)
+	}
+
+	var cmd rpcgame.Command
+	for {
+		_, err := io.ReadFull(os.Stdin, cmd[:2])
+		if err != nil {
+			return fmt.Errorf("reading header from zig: %v", err)
+		}
+
+		op := cmd.OpCode()
+		sz, ok := op.Size()
+		if !ok {
+			return fmt.Errorf("unknown opcode from zig: %v", op)
+		}
+
+		_, err = io.ReadFull(os.Stdin, cmd[2:sz])
+		if err != nil {
+			return fmt.Errorf("reading payload from zig: %v", err)
+		}
+
+		n.Act(cmd)
 	}
 }
 
-func handleInbound(lk *sync.Mutex, synchro *sync.Cond, r *rollback.Rollback) {
-	var b []byte
-	for {
-		b = makeBuffer(b, 2)
-		_, err := io.ReadFull(os.Stdin, b)
-		if err != nil {
-			log.Fatalf("reading header: %v", err)
-		}
-		op := rpcgame.OpCode(binary.LittleEndian.Uint16(b))
-		switch op {
-		case rpcgame.GivePlaneHeading: // GivePlaneHeading
-			const size = 2 + // OpCode
-				4 + // id
-				2 // heading
-			b = makeBuffer(b, size)
-			_, err = io.ReadFull(os.Stdin, b[2:])
-			if err != nil {
-				log.Fatalf("reading data: %v", err)
-			}
-			lk.Lock()
-			genIdBefore := r.LiveGen
-			r.Do(rollback.Command{Op: rpcgame.Command(b), Reliable: true, HappendAt: r.Live.Now})
-			if genIdBefore != r.LiveGen {
-				synchro.Broadcast()
-			}
-			lk.Unlock()
-		default:
-			log.Fatalf("got invalid opcode: %v", op)
-		}
-	}
-}
 func u16(b []byte, x uint16) []byte {
 	binary.LittleEndian.PutUint16(b, x)
 	return b[2:]
