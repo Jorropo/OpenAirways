@@ -33,7 +33,7 @@ pub fn main() anyerror!void {
         }
     }
 
-    const server_args = [_][]const u8{ "./game-server", "-debug-tickmode", "realtime" };
+    const server_args = [_][]const u8{"./game-server"};
     var proc = Child.init(&server_args, allocator);
     proc.stdin_behavior = .Pipe;
     proc.stdout_behavior = .Pipe;

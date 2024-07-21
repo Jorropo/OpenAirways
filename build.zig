@@ -100,6 +100,10 @@ const BuildServerStep = struct {
                 const out = b.path("game-server").getPath(b);
                 var go_build = [_][]const u8{ "go", "build", "-o", out, main_pkg };
                 var child = Child.init(&go_build, b.allocator);
+                var current = try std.process.getEnvMap(b.allocator);
+                defer current.deinit();
+                _ = try current.put("GOEXPERIMENT", "rangefunc"); // FIXME: remove once updating to go1.23
+                child.env_map = &current;
                 _ = try child.spawnAndWait();
             },
             .skip => {},

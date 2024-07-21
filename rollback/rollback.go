@@ -25,30 +25,38 @@ type command struct {
 }
 
 type Rollback struct {
+	// FIXME: netcode is tightly coupled with this struct, merge the two ?
+
 	Commit, Live state.State
 	LiveGen      uint64 // because after a rollback live might change but have the same tickid we track modifications in LiveGen
-	Players      uint
 
 	// TODO: replace with a MaxOutOfTime sized ring buffer
 	// index into []futureTicks + Commit.Now gives tick id to be applied on top of.
-	join []futureTicks
+	join [][]command
+}
+
+// Joins iterate all the jointures (rollback buffer) between Commit and Live.
+func (r *Rollback) Joins(yield func(Command) bool) {
+	base := r.Commit.Now
+	for i, ft := range r.join {
+		for _, c := range ft {
+			if !yield(Command{Op: c.Op, Reliable: c.Reliable, HappendAt: state.Time(i) + base}) {
+				return
+			}
+		}
+	}
 }
 
 // grabIdx computes the index into r.join and grows it if needed
 func (r *Rollback) grabIdx(s state.Time) uint {
 	idx := uint(s - r.Commit.Now)
 	if idx >= l(r.join) {
-		old := l(r.join)
-		r.join = append(r.join, make([]futureTicks, idx+1-l(r.join))...)
-		for ; old < l(r.join); old++ {
-			r.join[old].commited = r.Players
-		}
+		r.join = append(r.join, make([][]command, idx+1-l(r.join))...)
 	}
 	return idx
 }
 
-func (r *Rollback) Do(cmd ...Command) {
-	var new bool
+func (r *Rollback) Do(cmd ...Command) (liveIsNew bool) {
 	canBeAppliedOnTopOfLive := true
 	for _, c := range cmd {
 		if c.HappendAt <= r.Commit.Now {
@@ -56,21 +64,21 @@ func (r *Rollback) Do(cmd ...Command) {
 		}
 		idx := r.grabIdx(c.HappendAt)
 		ft := r.join[idx]
-		i, ok := slices.BinarySearchFunc(ft.cmds, c.Op, func(a command, b rpcgame.Command) int {
+		i, ok := slices.BinarySearchFunc(ft, c.Op, func(a command, b rpcgame.Command) int {
 			return bytes.Compare(a.Op[:], b[:])
 		})
 		if ok {
-			ft.cmds[i].Reliable = ft.cmds[i].Reliable || c.Reliable
+			ft[i].Reliable = ft[i].Reliable || c.Reliable
 			continue // dups, don't reapply
 		}
-		canBeAppliedOnTopOfLive = canBeAppliedOnTopOfLive && i == len(ft.cmds) && c.HappendAt == r.Live.Now
+		canBeAppliedOnTopOfLive = canBeAppliedOnTopOfLive && i == len(ft) && c.HappendAt == r.Live.Now
 		if canBeAppliedOnTopOfLive {
 			r.Live.Apply(c.Op)
 		}
-		r.join[idx].cmds = slices.Insert(ft.cmds, i, command{c.Op, c.Reliable})
-		new = true
+		r.join[idx] = slices.Insert(ft, i, command{c.Op, c.Reliable})
+		liveIsNew = true
 	}
-	if new {
+	if liveIsNew {
 		if canBeAppliedOnTopOfLive {
 			return
 		}
@@ -79,7 +87,7 @@ func (r *Rollback) Do(cmd ...Command) {
 		r.Live.Copy(&r.Commit)
 		r.LiveGen++
 		if l(r.join) > 0 {
-			for _, c := range r.join[0].cmds {
+			for _, c := range r.join[0] {
 				r.Live.Apply(c.Op)
 			}
 		}
@@ -89,33 +97,28 @@ func (r *Rollback) Do(cmd ...Command) {
 			if idx >= l(r.join) {
 				continue
 			}
-			for _, c := range r.join[idx].cmds {
+			for _, c := range r.join[idx] {
 				r.Live.Apply(c.Op)
 			}
 		}
 	}
+	return
 }
 
-func (r *Rollback) DoCommit(t state.Time) {
-	idx := r.grabIdx(t)
-	if r.join[idx].commited == 0 {
-		panic("should be unreachable, netcode shouldn't let this through: trying to commit an already commited tick")
+func (r *Rollback) TickCommit() {
+	idx := r.grabIdx(r.Commit.Now)
+	if idx != 0 {
+		panic("should be unreachable, netcode shouldn't let this through: trying to commit out of order")
 	}
-	r.join[idx].commited--
-	if r.join[idx].commited == 0 {
-		if idx != 0 {
-			panic("should be unreachable, netcode shouldn't let this through: trying to commit out of order")
+	for _, c := range r.join[0] {
+		if !c.Reliable {
+			continue // discard unreliable commands
 		}
-		for _, c := range r.join[0].cmds {
-			if !c.Reliable {
-				continue // discard unreliable commands
-			}
-			r.Commit.Apply(c.Op)
-		}
-		r.Commit.Tick()
-		r.join[0].cmds = nil // early gc
-		r.join = r.join[1:]
+		r.Commit.Apply(c.Op)
 	}
+	r.Commit.Tick()
+	r.join[0] = nil // early gc
+	r.join = r.join[1:]
 }
 
 func (r *Rollback) TickLive() {
@@ -125,7 +128,7 @@ func (r *Rollback) TickLive() {
 	if idx >= l(r.join) {
 		return
 	}
-	for _, c := range r.join[idx].cmds {
+	for _, c := range r.join[idx] {
 		r.Live.Apply(c.Op)
 	}
 }
