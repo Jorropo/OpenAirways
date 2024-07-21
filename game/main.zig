@@ -47,6 +47,8 @@ pub fn main() anyerror!void {
     var thread = try start_server(allocator, &proc, &state);
 
     const plane_img = rl.loadTexture("assets/plane_1.png");
+    defer plane_img.unload();
+
     const plane_w: f32 = @floatFromInt(plane_img.width);
     const plane_h: f32 = @floatFromInt(plane_img.height);
     const plane_size = V2.init(plane_w, plane_h);
