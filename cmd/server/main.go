@@ -126,53 +126,7 @@ couldntStartClients:
 		}
 	}
 
-	var sendReuse []byte
-	{
-		// Send game init packet
-		const size = 4 + // TickRate
-			1 + // SubPixel
-			4 // speed
-		sendReuse = makeBuffer(sendReuse, size)
-		b := sendReuse
-		b = u32(b, uint32(state.TickRate))
-		b[0] = state.SubPixel
-		b = b[1:]
-		b = u32(b, uint32(state.Speed))
-		_, err := os.Stdout.Write(sendReuse)
-		if err != nil {
-			return fmt.Errorf("writing: %w", err)
-		}
-	}
-
-	n, err := netcode.New(h, func(s *state.State, unlock func()) {
-		size := 4 + // Now
-			4 + // len(Planes)
-			(4+ // id
-				4+ // x
-				4+ // y
-				2+ // wantHeading
-				2)* // heading
-				uint(len(s.Planes))
-		orig := makeBuffer(sendReuse, size)
-		b := orig
-
-		b = u32(b, uint32(s.Now))
-		b = u32(b, uint32(len(s.Planes)))
-		for _, p := range s.Planes {
-			b = u32(b, p.ID)
-			xy, heading := p.Position(s.Now)
-			b = u32(b, uint32(xy.X))
-			b = u32(b, uint32(xy.Y))
-			b = u16(b, uint16(p.WantHeading))
-			b = u16(b, uint16(heading))
-		}
-		unlock()
-
-		_, err := os.Stdout.Write(orig)
-		if err != nil {
-			log.Fatalf("writing to zig client: %s", err)
-		}
-	}, info.ID)
+	n, err := netcode.New(h, makeRenderCallback(), info.ID)
 	if err != nil {
 		return fmt.Errorf("setting up netcode: %w", err)
 	}
@@ -199,6 +153,61 @@ couldntStartClients:
 	}
 }
 
+func makeRenderCallback() func(*state.State, func()) {
+	var hasDoneInit bool
+	var sendReuse []byte
+	return func(s *state.State, unlock func()) {
+		content := sendReuse[:0]
+		if !hasDoneInit {
+			hasDoneInit = true
+			// Send game init packet
+			const size = 2 + // OpCode
+				4 + // TickRate
+				1 + // SubPixel
+				4 + // speed
+				4*4 + // map size
+				4*4 // visible map area
+			content = makeBuffer(content, size)
+			b := content
+			b = u16(b, uint16(rpcgame.GameInit))
+			b = u32(b, uint32(state.TickRate))
+			b[0] = state.SubPixel
+			b = b[1:]
+			b = u32(b, uint32(state.Speed))
+			b = rect(b, s.MapSize)
+			b = rect(b, s.CameraSize)
+		}
+
+		size := 2 + // OpCode
+			4 + // Now
+			4 + // len(Planes)
+			(4+ // id
+				4*2+ // pos
+				2+ // wantHeading
+				2)* // heading
+				uint(len(s.Planes))
+		content, b := appendNewBufferAfter(content, size)
+
+		b = u16(b, uint16(rpcgame.StateUpdate))
+		b = u32(b, uint32(s.Now))
+		b = u32(b, uint32(len(s.Planes)))
+		for _, p := range s.Planes {
+			b = u32(b, p.ID)
+			pos, heading := p.Position(s.Now)
+			b = v2(b, pos)
+			b = u16(b, uint16(p.WantHeading))
+			b = u16(b, uint16(heading))
+		}
+		unlock()
+
+		sendReuse = content
+		_, err := os.Stdout.Write(content)
+		if err != nil {
+			log.Fatalf("writing to zig client: %s", err)
+		}
+	}
+}
+
 func u16(b []byte, x uint16) []byte {
 	binary.LittleEndian.PutUint16(b, x)
 	return b[2:]
@@ -209,9 +218,31 @@ func u32(b []byte, x uint32) []byte {
 	return b[4:]
 }
 
+func v2(b []byte, v state.V2) []byte {
+	_ = b[:8]
+	binary.LittleEndian.PutUint32(b, uint32(v.X))
+	binary.LittleEndian.PutUint32(b[4:], uint32(v.Y))
+	return b[8:]
+}
+
+func rect(b []byte, r state.Rect) []byte {
+	_ = b[:16]
+	binary.LittleEndian.PutUint32(b, uint32(r.X))
+	binary.LittleEndian.PutUint32(b[4:], uint32(r.Y))
+	binary.LittleEndian.PutUint32(b[8:], uint32(r.W))
+	binary.LittleEndian.PutUint32(b[12:], uint32(r.H))
+	return b[16:]
+}
+
 func makeBuffer(buf []byte, length uint) []byte {
 	if uint(cap(buf)) < length {
 		return append(buf[:cap(buf)], make([]byte, length-uint(cap(buf)))...)
 	}
 	return buf[:length]
+}
+
+func appendNewBufferAfter(b []byte, length uint) (total, new []byte) {
+	total = append(b, make([]byte, length)...)
+	new = total[len(b):]
+	return
 }

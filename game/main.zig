@@ -42,9 +42,14 @@ pub fn main() anyerror!void {
     proc.stdin_behavior = .Pipe;
     proc.stdout_behavior = .Pipe;
     proc.stderr_behavior = .Inherit;
-    var state = State{};
 
-    var thread = try start_server(allocator, &proc, &state);
+    var game = Game{
+        .allocator = allocator,
+        .server_proc = proc,
+    };
+    var state = &game.state;
+
+    try game.start_server();
 
     const plane_img = rl.loadTexture("assets/plane_1.png");
     defer plane_img.unload();
@@ -55,14 +60,14 @@ pub fn main() anyerror!void {
 
     var input_state: InputState = .none;
 
-    state.initFinished.wait();
+    game.initFinished.wait();
     server_args[0] = programName; // restore for argsFree
     std.process.argsFree(allocator, server_args);
-    const in = proc.stdin orelse return;
+    const in = game.server_proc.stdin orelse return;
 
     while (!rl.windowShouldClose()) { // Detect window close button or ESC key
         rl.beginDrawing();
-        const frameClock: i64 = @intCast(state.timer.read());
+        const frameClock: i64 = @intCast(game.timer.read());
 
         const mouse_pos = rl.getMousePosition();
         switch (input_state) {
@@ -82,7 +87,7 @@ pub fn main() anyerror!void {
 
             .none => {
                 if (rl.isMouseButtonPressed(rl.MouseButton.mouse_button_left)) {
-                    const clicked = Plane.intersecting_plane(&state, plane_size, mouse_pos);
+                    const clicked = Plane.intersecting_plane(state, plane_size, mouse_pos);
                     if (clicked) |p| {
                         input_state = .{ .plane_target = .{
                             .plane_id = p.id,
@@ -99,9 +104,9 @@ pub fn main() anyerror!void {
 
         rl.clearBackground(rl.Color.white);
 
-        state.mu.lock();
+        game.mu.lock();
         const nanosPerTick = std.time.ns_per_s / state.tickRate;
-        const deltans = frameClock - @as(i64, state.now - state.timerBase) * nanosPerTick;
+        const deltans = frameClock - @as(i64, state.now - game.timerBase) * nanosPerTick;
         state.deltaTicks = @as(f32, @floatFromInt(deltans)) / @as(f32, @floatFromInt(nanosPerTick));
 
         var highlighted_plane: Plane = undefined;
@@ -111,19 +116,19 @@ pub fn main() anyerror!void {
                 highlight = true;
                 highlighted_plane = plane;
             }
-            try plane.draw(allocator, &state, plane_img, plane_size, highlight, true);
+            try plane.draw(allocator, state, plane_img, plane_size, highlight, true);
         }
 
         if (input_state == .plane_target) {
-            const loc = highlighted_plane.canvas_loc(&state);
+            const loc = highlighted_plane.canvas_loc(state);
             rl.drawLineEx(loc, input_state.plane_target.current, 4, rl.Color.red);
         }
 
-        state.mu.unlock();
+        game.mu.unlock();
     }
 
-    _ = try proc.kill();
-    thread.join();
+    _ = try game.server_proc.kill();
+    game.server_thread.join();
 }
 
 const InputPlaneTarget = struct {
@@ -198,100 +203,131 @@ const Plane = struct {
     }
 };
 
+const Game = struct {
+    allocator: Allocator,
+
+    state: State = .{},
+
+    server_thread: Thread = undefined,
+    server_proc: Child,
+
+    mu: Thread.Mutex = .{},
+    initFinished: Thread.Semaphore = .{},
+    timer: std.time.Timer = undefined,
+    timerBase: u32 = 0,
+
+    const OpCode = enum(u16) {
+        GivePlaneHeading = 0x0001,
+
+        GameInit = 0x0800,
+        StateUpdate = 0x0801,
+        MapResize = 0x0802,
+    };
+
+    const PacketSize = enum(usize) {
+        GivePlaneHeading = 8,
+
+        GameInit = 43,
+        // StateUpdate = dynamic,
+        MapResize = 18,
+    };
+
+    fn start_server(self: *Game) !void {
+        self.server_thread = try Thread.spawn(.{}, handle_inbound, .{self});
+    }
+
+    fn handle_inbound(self: *Game) !void {
+        var state = &self.state;
+        const proc = &self.server_proc;
+
+        try self.server_proc.spawn();
+        const out = self.server_proc.stdout orelse return;
+
+        var init = [_]u8{0} ** (@intFromEnum(Game.PacketSize.GameInit));
+        _ = try out.readAll(&init);
+
+        if (r_u16(init[0..2]) != @intFromEnum(Game.OpCode.GameInit))
+            @panic("expected first packet from server to be GameInit");
+
+        self.timer = try std.time.Timer.start(); // try to synchronize clock good enough with the server
+        state.tickRate = r_u32(init[2..6]);
+        if (init[6] >= 1 << 5) return error.OutOfRange;
+        const subPixelFactor: f32 = @floatFromInt(@as(i32, 1) << @intCast(init[6]));
+        state.planeSpeed = r_f32(init[6..10]) / subPixelFactor;
+
+        var received: u2 = 3;
+
+        while (proc.term == null) {
+            var header: [10]u8 = [_]u8{0} ** 10;
+            _ = out.readAll(&header) catch break;
+
+            if (r_u16(header[0..2]) != @intFromEnum(Game.OpCode.StateUpdate))
+                @panic("unsupported op code");
+            const now = r_u32(header[2..6]);
+            const plane_count = r_u32(header[6..10]);
+
+            if (received != 0) {
+                received -= 1;
+                if (received == 1) { // use the second tick to start timer because it's more reliable due to multiplayer startup lag
+                    self.timer = try std.time.Timer.start();
+                    self.timerBase = now;
+                    self.initFinished.post();
+                }
+            }
+
+            // fetch quantity of planes
+            const raw_planes = try self.allocator.alloc(u8, 16 * plane_count);
+            defer self.allocator.free(raw_planes);
+            _ = out.readAll(raw_planes) catch break;
+
+            self.mu.lock();
+            defer self.mu.unlock();
+
+            self.allocator.free(state.planes);
+
+            // read state data
+            state.now = now;
+            state.planes = try self.allocator.alloc(Plane, plane_count);
+
+            for (0..plane_count) |i| {
+                const offset = state_plane_size * i;
+
+                const b = raw_planes[offset..];
+                const id = r_u32(b[0..4]);
+                const x = r_f32(b[4..8]) / subPixelFactor;
+                const y = r_f32(b[8..12]) / subPixelFactor;
+
+                const want_heading = r_u16(b[12..14]);
+                const heading = r_u16(b[14..16]);
+
+                state.planes[i].id = id;
+                state.planes[i].pos = V2.init(x, y);
+                state.planes[i].want_heading = want_heading;
+                state.planes[i].heading = heading;
+            }
+        }
+
+        print("closing\n", .{});
+        self.allocator.free(state.planes);
+    }
+};
+
 const State = struct {
     now: u32 = 0,
     deltaTicks: f32 = 0,
     tickRate: u32 = 0,
     planeSpeed: f32 = 0,
     planes: []Plane = &[_]Plane{},
-    mu: Thread.Mutex = .{},
-    initFinished: Thread.Semaphore = .{},
-    timer: std.time.Timer = undefined,
-    timerBase: u32 = 0,
 };
 
-fn start_server(allocator: Allocator, proc: *Child, state: *State) !Thread {
-    const thread = try Thread.spawn(.{}, read_data, .{ allocator, proc, state });
-    return thread;
-}
-
-fn read_data(allocator: Allocator, proc: *Child, state: *State) !void {
-    try proc.spawn();
-
-    const out = proc.stdout orelse return;
-    var buffered_state = State{};
-
-    var init = [_]u8{0} ** (4 + 1 + 4);
-    _ = try out.readAll(&init);
-    state.tickRate = r_u32(init[0..4]);
-    if (init[4] >= 1 << 5) {
-        return error.OutOfRange;
-    }
-    const subPixelFactor: f32 = @floatFromInt(@as(i32, 1) << @intCast(init[4]));
-    state.planeSpeed = r_f32(init[5..9]) / subPixelFactor;
-
-    var received: u2 = 3;
-
-    while (proc.term == null) {
-        var header: [8]u8 = [_]u8{0} ** 8;
-        _ = out.readAll(&header) catch break;
-
-        const plane_count = r_u32(header[4..8]);
-        const raw_planes = try allocator.alloc(u8, 16 * plane_count);
-        defer allocator.free(raw_planes);
-
-        _ = out.readAll(raw_planes) catch break;
-
-        const now = r_u32(header[0..4]);
-        buffered_state.now = now;
-        if (received != 0) {
-            received -= 1;
-            if (received == 1) { // use the second tick to start timer because it's more reliable due to multiplayer startup lag
-                state.timer = try std.time.Timer.start();
-                state.timerBase = now;
-                state.initFinished.post();
-            }
-        }
-
-        const old = buffered_state.planes;
-        buffered_state.planes = try allocator.alloc(Plane, plane_count);
-
-        const plane_size = 4 + // id
-            4 + // x
-            4 + // y
-            2 + // wantHeading
-            2; // heading
-
-        for (0..plane_count) |i| {
-            const offset = plane_size * i;
-
-            const b = raw_planes[offset..];
-            const id = r_u32(b[0..4]);
-            const x = r_f32(b[4..8]) / subPixelFactor;
-            const y = r_f32(b[8..12]) / subPixelFactor;
-
-            const want_heading = r_u16(b[12..14]);
-            const heading = r_u16(b[14..16]);
-
-            buffered_state.planes[i].id = id;
-            buffered_state.planes[i].pos = V2.init(x, y);
-            buffered_state.planes[i].want_heading = want_heading;
-            buffered_state.planes[i].heading = heading;
-        }
-
-        state.mu.lock();
-        state.*.now = buffered_state.now;
-        state.*.planes = buffered_state.planes;
-        allocator.free(old);
-        state.mu.unlock();
-    }
-
-    allocator.free(buffered_state.planes);
-}
+const state_plane_size = 4 + // id
+    4 + // x
+    4 + // y
+    2 + // wantHeading
+    2; // heading
 
 const RPC = enum(u32) {
     GivePlaneHeading = 0x1,
-    CommitTick = 0x8000,
 
     fn give_plane_heading(w: std.fs.File, plane_id: u32, start: V2, target: V2) !void {
         // convert from screen space to canvas space

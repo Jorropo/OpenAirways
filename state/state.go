@@ -29,14 +29,18 @@ const Tau = rpcgame.Tau
 
 type Rot16 = rpcgame.Rot16
 
-type XY struct {
+type V2 struct {
 	X, Y int32
+}
+
+type Rect struct {
+	X, Y, W, H int32
 }
 
 type Plane struct {
 	ID                   uint32
 	time                 Time // last time position was materialized
-	pos                  XY
+	pos                  V2
 	WantHeading, heading Rot16
 }
 
@@ -44,11 +48,11 @@ func (p *Plane) flyingStraight() bool {
 	return p.WantHeading == p.heading
 }
 
-func (p *Plane) Position(now Time) (XY, Rot16) {
+func (p *Plane) Position(now Time) (V2, Rot16) {
 	if p.flyingStraight() {
 		distance := float64((now - p.time) * Speed)
 		r := p.heading.Rad()
-		return XY{p.pos.X + int32(distance*math.Sin(r)), p.pos.Y + int32(distance*math.Cos(r))}, p.heading
+		return V2{p.pos.X + int32(distance*math.Sin(r)), p.pos.Y + int32(distance*math.Cos(r))}, p.heading
 	}
 
 	var toCenter Rot16
@@ -67,7 +71,7 @@ func (p *Plane) Position(now Time) (XY, Rot16) {
 		arc = -arc
 	}
 	toDest := toCenter + Tau/2 + arc
-	xy := XY{
+	xy := V2{
 		center_x + int32(turnRadius*math.Sin(toDest.Rad())),
 		center_y + int32(turnRadius*math.Cos(toDest.Rad())),
 	}
@@ -97,6 +101,8 @@ type State struct {
 	nextPlaneId uint32 // monotonic increasing plane id
 	Now         Time
 	Planes      []Plane
+	MapSize     Rect
+	CameraSize  Rect
 }
 
 func (s *State) Tick() {
@@ -177,7 +183,7 @@ func (s *State) Read(r io.Reader) (red uint, err error) {
 		s.Planes = append(s.Planes, Plane{
 			ID:          binary.LittleEndian.Uint32(b[:]),
 			time:        Time(binary.LittleEndian.Uint32(b[4:])),
-			pos:         XY{int32(binary.LittleEndian.Uint32(b[8:])), int32(binary.LittleEndian.Uint32(b[12:]))},
+			pos:         V2{int32(binary.LittleEndian.Uint32(b[8:])), int32(binary.LittleEndian.Uint32(b[12:]))},
 			WantHeading: Rot16(binary.LittleEndian.Uint16(b[16:])),
 			heading:     Rot16(binary.LittleEndian.Uint16(b[18:])),
 		})
