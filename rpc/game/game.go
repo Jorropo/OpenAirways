@@ -8,7 +8,11 @@ import (
 	"strconv"
 )
 
-const maximumSize = 8 // GivePlaneHeading
+// maximumSize is the size, in bytes of the largest packet sent from the client
+// to the server.
+//
+// Currently, it is GivePlaneHeading
+const maximumSize = 2 + 6
 
 type Command [maximumSize]byte
 
@@ -29,6 +33,7 @@ func (c *Command) OpCode() OpCode {
 
 type OpCode uint16
 
+// client to server (0x0000 <= n < 0x0800)
 const (
 	_ OpCode = iota
 	GivePlaneHeading
@@ -59,8 +64,16 @@ func (o OpCode) Size() (size uint, exists bool) {
 	}
 }
 
+// server to client (0x0800 <= n < 0x1000)
 const (
-	CommitTick OpCode = iota + 0x8000
+	GameInit OpCode = iota + 0x0800
+	StateUpdate
+	MapResize
+)
+
+// local meta
+const (
+	CommitTick OpCode = iota + 0x2000
 )
 
 func EncodeGivePlaneHeading(id uint32, heading Rot16) Command {

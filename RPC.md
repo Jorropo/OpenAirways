@@ -28,9 +28,9 @@ The game OpCodes need to be impotent on each tick.
 |--------|------------------|-------------------------------------------------------------------------------------------------------------|-----------------------------------------|
 | 0x0000 | DoNotUse         |                                                                                                             | 0                                       |
 | 0x0001 | GivePlaneHeading | `u32` plane id<br>`Rot16` new heading                                                                       | 4 +<br>2                                |
-| 0x0800 | GameInit         | `u32` tickrate (hz)<br>`u5` SubPixel factor<br>`u32` plane speed<br>`u32x2` map size<br>`u32x4` visible map | 4 +<br>1 +<br>4 +<br>4 \* 2 +<br>4 \* 4 |
+| 0x0800 | GameInit         | `u32` tickrate (hz)<br>`u5` SubPixel factor<br>`u32` plane speed<br>`u32x4` map size<br>`u32x4` camera size | 4 +<br>1 +<br>4 +<br>4 \* 4 +<br>4 \* 4 |
 | 0x0801 | StateUpdate      | `u32` current tick<br>`u32` planes (n)<br>- `Plane` entry                                                   | 4 +<br>4 + (value of N)<br>N \* 16      |
-| 0x0802 | MapResize        | `u32x2` map size<br>`u32x4` visible map                                                                     | 4 \* 2 +<br>4 \* 4                      |
+| 0x0802 | MapResize        | `u32x4` visible map                                                                                         | 4 \* 4                                  |
 | 0x2000 | CommitTick       |                                                                                                             | 0                                       |
 ## Client to Server OpCode details
 
@@ -51,6 +51,8 @@ The first packet sent when connecting to the go server.
 - `u32` tick rate in hz
 - `u5` SubPixel factor, how many in game units make up a pixel (expressed as `1 << x`)
 - `u32` speed of the plane in subpixels per tick
+- `u32x4` size of the full map. (x, y, w, h). negative values for x and y are supported. (0,0) is typically expected to be the center.
+- `u32x4` size of the camera. how much of the screen to show the user.
 
 ### 0x0801 - StateUpdate
 
@@ -63,3 +65,5 @@ Continuous packets sent with the latest game state.
   - `i32` y, in subpixel units
   - `Rot16` wantHeading, heading the plane is turning towards
   - `Rot16` heading, current heading of the plane
+
+### 0x0802 - MapResize
