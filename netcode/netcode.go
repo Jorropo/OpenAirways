@@ -92,6 +92,7 @@ func New(h host.Host, render renderer, target peer.ID) (*Netcode, error) {
 				log.Println(c.RemotePeer(), "stream error:", err)
 			}
 		})
+		n.rollback.Live.Tick() // start with live in the future, commit must trail in the past.
 		go n.tickLoop(time.Now(), 0)
 	} else {
 		if err := n.startupClientStreams(); err != nil {
@@ -477,7 +478,7 @@ func (n *Netcode) cleanupCommits() (needToBroadcastSend bool) {
 	}
 	n.commitWaitingOnPlayers = n.commitWaitingOnPlayers[i:]
 	if n.playersBlockingCommits == 0 {
-		for n.rollback.Commit.Now < n.rollback.Live.Now { // other clients might be in the future compared to us. Wait for us.
+		for n.rollback.Commit.Now+1 < n.rollback.Live.Now { // other clients might be in the future compared to us. Wait for us.
 			needToBroadcastSend = n.tickCommit() || needToBroadcastSend
 		}
 	}
