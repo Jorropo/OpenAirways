@@ -136,8 +136,11 @@ func (n *Netcode) startupClientStreams() error {
 	live := state.Time(binary.LittleEndian.Uint32(theirLive[:]))
 	oneWayLatency := time.Since(start) / 2
 	start = start.Add(oneWayLatency) // catchup to their time
-	commitDt := time.Duration(live-n.rollback.Commit.Now) * time.Second / state.TickRate
-	start = start.Add(-commitDt) // we need to compensate for the fact commit was sent before we measured timing.
+	for range live - n.rollback.Commit.Now {
+		n.rollback.Live.Tick()
+	}
+
+	n.playersWaitingOnSend++ // the server waits our messages
 
 	go n.tickLoop(start, live)
 	go n.clientSendLoop(s, live)
@@ -218,7 +221,7 @@ func (n *Netcode) clientSendLoop(s network.Stream, sendTime state.Time) {
 					sendTime++
 				}
 				if todo.when != sendTime {
-					panic("trying to send packets out of order to the server")
+					panic(fmt.Sprintf("trying to send packets out of order to the server: %v %#+v", sendTime, todo))
 				}
 
 				p = append(p, todo.cmd.Bytes()...)
@@ -244,7 +247,7 @@ func (n *Netcode) clientSendLoop(s network.Stream, sendTime state.Time) {
 	}
 }
 
-func (n *Netcode) handleStreamAsServer(s network.Stream) error {
+func (n *Netcode) handleStreamAsServer(s network.Stream) (err error) {
 	defer s.Reset()
 
 	n.lk.Lock()
@@ -269,6 +272,11 @@ func (n *Netcode) handleStreamAsServer(s network.Stream) error {
 	n.totalPlayers++
 	n.lk.Unlock()
 	defer func() {
+		if err == nil {
+			// avoid deadlock in case of panic
+			return
+		}
+
 		// player disconnected, cleanup write edge
 		n.lk.Lock()
 		defer n.lk.Unlock()
@@ -341,9 +349,14 @@ func (n *Netcode) handleStreamAsServer(s network.Stream) error {
 
 	// Now start the main loops.
 	go func() {
-		if err := func() error {
+		if err := func() (err error) {
 			defer s.Reset()
-			defer cleanupPlayerReadEdge()
+			defer func() {
+				if err != nil {
+					// avoid deadlock in case of panic
+					cleanupPlayerReadEdge()
+				}
+			}()
 
 			var buf rpcgame.Command
 			for {
@@ -473,7 +486,7 @@ func (n *Netcode) cleanupCommits() (needToBroadcastSend bool) {
 	var p playersBlockingCommits
 	for i, p = range n.commitWaitingOnPlayers {
 		if p != 0 ||
-			n.rollback.Commit.Now >= n.rollback.Live.Now { // other clients might be in the future compared to us. Wait for us.
+			n.rollback.Commit.Now+1 >= n.rollback.Live.Now { // other clients might be in the future compared to us. Wait for us.
 			break
 		}
 		needToBroadcastSend = n.tickCommit() || needToBroadcastSend
