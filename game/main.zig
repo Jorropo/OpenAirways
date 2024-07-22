@@ -33,8 +33,12 @@ pub fn main() anyerror!void {
         }
     }
 
-    const server_args = [_][]const u8{"./game-server"};
-    var proc = Child.init(&server_args, allocator);
+    var server_args = try std.process.argsAlloc(allocator);
+    const programName = server_args[0];
+    const const_server_args: [][:0]const u8 = server_args;
+    const_server_args[0] = "./game-server";
+
+    var proc = Child.init(const_server_args, allocator);
     proc.stdin_behavior = .Pipe;
     proc.stdout_behavior = .Pipe;
     proc.stderr_behavior = .Inherit;
@@ -50,6 +54,8 @@ pub fn main() anyerror!void {
     var input_state: InputState = .none;
 
     state.initFinished.wait();
+    server_args[0] = programName; // restore for argsFree
+    std.process.argsFree(allocator, server_args);
     const in = proc.stdin orelse return;
 
     while (!rl.windowShouldClose()) { // Detect window close button or ESC key
