@@ -259,7 +259,7 @@ const Game = struct {
         state.tickRate = r_u32(init[2..6]);
         if (init[6] >= 1 << 5) return error.OutOfRange;
         const subPixelFactor: f32 = @floatFromInt(@as(i32, 1) << @intCast(init[6]));
-        state.planeSpeed = r_f32(init[6..10]) / subPixelFactor;
+        state.planeSpeed = r_f32(init[7..11]) / subPixelFactor;
 
         var received: u2 = 3;
 
