@@ -494,16 +494,17 @@ func (n *Netcode) cleanupCommits() (needToBroadcastSend bool) {
 		panic("wrong state n.rollback.Commit.Live > n.rollback.Live.Now")
 	}
 
-	var i int
+	var ticked uint
 	var p playersBlockingCommits
-	for i, p = range n.commitWaitingOnPlayers {
+	for _, p = range n.commitWaitingOnPlayers {
 		if p != 0 ||
 			n.rollback.Commit.Now+1 >= n.rollback.Live.Now { // other clients might be in the future compared to us. Wait for us.
 			break
 		}
+		ticked++
 		needToBroadcastSend = n.tickCommit() || needToBroadcastSend
 	}
-	n.commitWaitingOnPlayers = n.commitWaitingOnPlayers[i:]
+	n.commitWaitingOnPlayers = n.commitWaitingOnPlayers[ticked:]
 	if n.playersBlockingCommits == 0 && len(n.commitWaitingOnPlayers) == 0 {
 		for n.rollback.Commit.Now+1 < n.rollback.Live.Now { // other clients might be in the future compared to us. Wait for us.
 			needToBroadcastSend = n.tickCommit() || needToBroadcastSend
