@@ -9,7 +9,7 @@ import (
 	"math" // FIXME(@Jorropo): using float64 for Sin and Cos is likely not consistent based on hardware, if this cause desync replace with a pure uint16 implementation.
 	"slices"
 
-	rpcgame "github.com/Jorropo/hh-scope/rpc/game"
+	rpcgame "github.com/Jorropo/OpenAirways/rpc/game"
 )
 
 const (

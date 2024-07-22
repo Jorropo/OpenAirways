@@ -21,7 +21,7 @@ pub fn build(b: *std.Build) !void {
     const raylib_artifact = raylib_dep.artifact("raylib"); // raylib C library
 
     const exe = b.addExecutable(.{
-        .name = "hh-scope",
+        .name = "OpenAirways",
         .root_source_file = b.path("game/main.zig"),
         .target = target,
         .optimize = optimize,

@@ -11,15 +11,15 @@ import (
 	"os/exec"
 	"strings"
 
-	"github.com/Jorropo/hh-scope/netcode"
+	"github.com/Jorropo/OpenAirways/netcode"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/event"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/libp2p/go-libp2p/p2p/transport/tcp"
 	"github.com/multiformats/go-multiaddr"
 
-	rpcgame "github.com/Jorropo/hh-scope/rpc/game"
-	"github.com/Jorropo/hh-scope/state"
+	rpcgame "github.com/Jorropo/OpenAirways/rpc/game"
+	"github.com/Jorropo/OpenAirways/state"
 )
 
 func main() {
@@ -82,7 +82,7 @@ func mainRet() error {
 		{
 			id := laddr.String() + "/p2p/" + h.ID().String()
 			for range debugStartClients {
-				cmd := exec.Command("./zig-out/bin/hh-scope", "-target", id)
+				cmd := exec.Command("./zig-out/bin/OpenAirways", "-target", id)
 				cmd.Stdout = os.Stderr
 				cmd.Stderr = os.Stderr
 				err := cmd.Start()

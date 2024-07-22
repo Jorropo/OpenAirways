@@ -1,4 +1,4 @@
-module github.com/Jorropo/hh-scope
+module github.com/Jorropo/OpenAirways
 
 go 1.22
 

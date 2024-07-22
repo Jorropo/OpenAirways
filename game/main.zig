@@ -20,7 +20,7 @@ pub fn main() anyerror!void {
         .msaa_4x_hint = true,
         .vsync_hint = true,
     });
-    rl.initWindow(screen.x, screen.y, "hh-scope");
+    rl.initWindow(screen.x, screen.y, "OpenAirways");
     defer rl.closeWindow();
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
