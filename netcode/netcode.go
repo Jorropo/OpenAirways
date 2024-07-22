@@ -139,6 +139,9 @@ func (n *Netcode) startupClientStreams() error {
 	for range live - n.rollback.Commit.Now {
 		n.rollback.Live.Tick()
 	}
+	if n.rollback.Live.Now != live {
+		panic("didn't caught up to expected value")
+	}
 
 	n.playersWaitingOnSend++ // the server waits our messages
 
@@ -529,6 +532,10 @@ func (n *Netcode) pushSent(fromPlayerId uint32, when state.Time, cmd rpcgame.Com
 	if n.playersWaitingOnSend == 0 {
 		return false
 	}
+	if n.target != "" && len(n.send) != 0 && n.send[len(n.send)-1].when > when {
+		panic("client is trying to send packets out of order")
+	}
+
 	n.send = append(n.send, sent{fromPlayerId, n.playersWaitingOnSend, when, cmd})
 	return true
 }
@@ -562,18 +569,19 @@ func (n *Netcode) tickLoop(start time.Time, sendAfter state.Time) {
 		}
 
 		n.lk.Lock()
+		var needsToBroadcastSend bool
 		for range todo {
 			n.rollback.TickLive()
+			if n.target != "" {
+				// client
+				if n.rollback.Live.Now >= sendAfter {
+					needsToBroadcastSend = n.pushSent(0, n.rollback.Live.Now, rpcgame.EncodeCommitTick())
+				}
+			}
 		}
-		var needsToBroadcastSend bool
 		if n.target == "" {
 			// server
 			needsToBroadcastSend = n.cleanupCommits() // if all other clients are in the future (or there are no clients), we can the one blocking commit.
-		} else {
-			// client
-			if n.rollback.Live.Now >= sendAfter {
-				needsToBroadcastSend = n.pushSent(0, n.rollback.Live.Now, rpcgame.EncodeCommitTick())
-			}
 		}
 		if needsToBroadcastSend {
 			n.sendCond.Broadcast()
