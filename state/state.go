@@ -83,8 +83,9 @@ func (p *Plane) tick(now Time) {
 		return
 	}
 
-	dt := int(now - p.time)
-	if dt*turnRate > abs(int(p.heading-p.WantHeading)) {
+	dt := uint(now - p.time)
+	tgt := min(p.heading-p.WantHeading, p.WantHeading-p.heading)
+	if dt*turnRate > uint(tgt) {
 		p.pos, _ = p.Position(now)
 		p.heading = p.WantHeading
 		p.time = now
