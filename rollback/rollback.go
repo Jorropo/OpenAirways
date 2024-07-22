@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"slices"
 
-	rpcgame "github.com/Jorropo/hh-scope/rpc/game"
-	"github.com/Jorropo/hh-scope/state"
+	rpcgame "github.com/Jorropo/OpenAirways/rpc/game"
+	"github.com/Jorropo/OpenAirways/state"
 )
 
 type Command struct {

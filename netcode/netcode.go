@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Jorropo/hh-scope/rollback"
-	rpcgame "github.com/Jorropo/hh-scope/rpc/game"
-	"github.com/Jorropo/hh-scope/state"
+	"github.com/Jorropo/OpenAirways/rollback"
+	rpcgame "github.com/Jorropo/OpenAirways/rpc/game"
+	"github.com/Jorropo/OpenAirways/state"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
