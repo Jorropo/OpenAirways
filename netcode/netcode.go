@@ -116,7 +116,7 @@ func (n *Netcode) startupClientStreams() error {
 		}
 	}()
 
-	err = n.rollback.Commit.Read(s)
+	_, err = n.rollback.Commit.Read(s)
 	if err != nil {
 		return fmt.Errorf("Reading commit state: %w", err)
 	}
@@ -331,10 +331,12 @@ func (n *Netcode) handleStreamAsServer(s network.Stream) error {
 		return err
 	}
 
-	// Then let it catchup
-	if _, err := s.Write(catchup); err != nil {
-		cleanupPlayerReadEdge()
-		return err
+	if len(catchup) > 0 {
+		// Then let it catchup
+		if _, err := s.Write(catchup); err != nil {
+			cleanupPlayerReadEdge()
+			return err
+		}
 	}
 
 	// Now start the main loops.
@@ -578,22 +580,4 @@ func (p *playersBlockingCommits) decrement() {
 		panic("decrementing playersBlockingCommits even tho it is already zero")
 	}
 	*p--
-}
-
-func readAtLeast(r io.Reader, b []byte, n uint) (red uint, err error) {
-	if uint(len(b)) < n {
-		panic("readAtLeast: buffer too small")
-	}
-	for red < n {
-		var nred int
-		nred, err = r.Read(b[red:])
-		red += uint(nred)
-		if err != nil {
-			if err == io.EOF && red < n {
-				err = io.ErrUnexpectedEOF // be loud about theses failures
-			}
-			return
-		}
-	}
-	return
 }

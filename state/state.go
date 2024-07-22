@@ -155,12 +155,13 @@ func (s *State) Copy(o *State) {
 }
 
 // Read reads the wire binary representation from r and writes to s.
-func (s *State) Read(r io.Reader) error {
+func (s *State) Read(r io.Reader) (red uint, err error) {
 	// FIXME: this is very trustfull and will panic or generate panics down the line if the input is malicious
 	var b [max(headerSize, planeSize)]byte
-	_, err := io.ReadFull(r, b[:headerSize])
+	n, err := io.ReadFull(r, b[:headerSize])
+	red += uint(n)
 	if err != nil {
-		return fmt.Errorf("reading When and len(Planes): %w", err)
+		return red, fmt.Errorf("reading When, planeId and len(Planes): %w", err)
 	}
 	s.Now = Time(binary.LittleEndian.Uint32(b[:]))
 	s.nextPlaneId = binary.LittleEndian.Uint32(b[4:])
@@ -168,9 +169,10 @@ func (s *State) Read(r io.Reader) error {
 
 	s.Planes = slices.Grow(s.Planes[:0], int(nPlanes))
 	for range nPlanes {
-		_, err = io.ReadFull(r, b[:planeSize])
+		n, err = io.ReadFull(r, b[:planeSize])
+		red += uint(n)
 		if err != nil {
-			return fmt.Errorf("reading Plane: %w", err)
+			return red, fmt.Errorf("reading Plane: %w", err)
 		}
 		s.Planes = append(s.Planes, Plane{
 			ID:          binary.LittleEndian.Uint32(b[:]),
@@ -180,16 +182,16 @@ func (s *State) Read(r io.Reader) error {
 			heading:     Rot16(binary.LittleEndian.Uint16(b[18:])),
 		})
 	}
-	return nil
+	return red, nil
 }
 
 func (s *State) UnmarshalBinary(b []byte) error {
-	r := bytes.NewReader(b)
-	if err := s.Read(r); err != nil {
+	n, err := s.Read(bytes.NewReader(b))
+	if err != nil {
 		return err
 	}
-	if r.Len() != 0 {
-		return fmt.Errorf("extra trailing bytes in input: %d", r.Len())
+	if n != uint(len(b)) {
+		return fmt.Errorf("extra trailing bytes in input: %d", n)
 	}
 	return nil
 }
@@ -212,14 +214,18 @@ func (s *State) AppendMarshalBinary(in []byte) []byte {
 	b := r[len(in):]
 
 	b = u32(b, uint32(s.Now))
+	b = u32(b, uint32(s.nextPlaneId))
 	b = u32(b, uint32(len(s.Planes)))
 	for _, p := range s.Planes {
 		b = u32(b, p.ID)
-		xy, heading := p.Position(s.Now)
-		b = u32(b, uint32(xy.X))
-		b = u32(b, uint32(xy.Y))
+		b = u32(b, uint32(p.time))
+		b = u32(b, uint32(p.pos.X))
+		b = u32(b, uint32(p.pos.Y))
 		b = u16(b, uint16(p.WantHeading))
-		b = u16(b, uint16(heading))
+		b = u16(b, uint16(p.heading))
+	}
+	if len(b) != 0 {
+		panic("State marshal logic error, didn't consumed all the buffer")
 	}
 	return r
 }
