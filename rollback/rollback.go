@@ -106,6 +106,9 @@ func (r *Rollback) Do(cmd ...Command) (liveIsNew bool) {
 }
 
 func (r *Rollback) TickCommit() {
+	r.check()
+	defer r.check()
+
 	idx := r.grabIdx(r.Commit.Now)
 	if idx != 0 {
 		panic("should be unreachable, netcode shouldn't let this through: trying to commit out of order")
@@ -122,6 +125,9 @@ func (r *Rollback) TickCommit() {
 }
 
 func (r *Rollback) TickLive() {
+	r.check()
+	defer r.check()
+
 	r.Live.Tick()
 	r.LiveGen++
 	idx := uint(r.Live.Now - r.Commit.Now)
@@ -130,6 +136,13 @@ func (r *Rollback) TickLive() {
 	}
 	for _, c := range r.join[idx] {
 		r.Live.Apply(c.Op)
+	}
+}
+
+// check does sanity checks for correctness
+func (r *Rollback) check() {
+	if r.Commit.Now >= r.Live.Now {
+		panic("live is not in commit's future")
 	}
 }
 

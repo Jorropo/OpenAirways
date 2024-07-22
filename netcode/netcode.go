@@ -183,6 +183,9 @@ func (n *Netcode) clientRecvLoop(s network.Stream) {
 			n.lk.Lock()
 			switch op {
 			case rpcgame.CommitTick:
+				if when != n.rollback.Commit.Now {
+					panic(fmt.Sprintf("inconsistent commit tick state, expected %d; got %d", when, n.rollback.Commit.Now))
+				}
 				n.rollback.TickCommit()
 			default:
 				if n.rollback.Do(rollback.Command{Op: buf, Reliable: true, HappendAt: when}) {
@@ -253,7 +256,7 @@ func (n *Netcode) handleStreamAsServer(s network.Stream) (err error) {
 	n.lk.Lock()
 	// First: send our commited state.
 	// Note: we can't send Live because other players might rollback before it. So they need to maintain their own rollback buffer.
-	firstPacket := n.rollback.Live.AppendMarshalBinary(nil)
+	firstPacket := n.rollback.Commit.AppendMarshalBinary(nil)
 
 	// Second: save all the reliable packets for them to catch-up.
 	var catchup []byte
@@ -270,11 +273,40 @@ func (n *Netcode) handleStreamAsServer(s network.Stream) (err error) {
 	lastSentGen := n.lastSentGen()
 	playerId := n.totalPlayers
 	n.totalPlayers++
+
+	remoteNow := n.rollback.Live.Now
+	remoteNow++                                         // it will be allowed to send us inputs on the next tick.
+	idx := n.grabIdxInCommitWaitingOnPlayers(remoteNow) // make sure all up to this point already exists
+	n.playersBlockingCommits++
+	for i := idx; i < uint(len(n.commitWaitingOnPlayers)); i++ {
+		// block us on future ticks
+		n.commitWaitingOnPlayers[i]++
+	}
 	n.lk.Unlock()
+	var readWasStarted bool
+	cleanupPlayerReadEdge := func() {
+		// player disconnected, cleanup read edge
+		n.lk.Lock()
+		defer n.lk.Unlock()
+
+		n.playersBlockingCommits--
+		for i := n.calcIdxInCommitWaitingOnPlayers(remoteNow); i < uint(len(n.commitWaitingOnPlayers)); i++ {
+			// stop blocking yet to be commited ticks
+			n.commitWaitingOnPlayers[i].decrement()
+		}
+		if n.cleanupCommits() {
+			n.sendCond.Broadcast()
+		}
+	}
+
 	defer func() {
 		if err == nil {
 			// avoid deadlock in case of panic
 			return
+		}
+
+		if !readWasStarted {
+			cleanupPlayerReadEdge()
 		}
 
 		// player disconnected, cleanup write edge
@@ -307,45 +339,20 @@ func (n *Netcode) handleStreamAsServer(s network.Stream) (err error) {
 		return fmt.Errorf("expected 1 for timing purposes, got %d", red)
 	}
 
-	n.lk.Lock()
-	remoteNow := n.rollback.Live.Now
-	remoteNow++                                         // it will be allowed to send us inputs on the next tick.
-	idx := n.grabIdxInCommitWaitingOnPlayers(remoteNow) // make sure all up to this point already exists
-	n.playersBlockingCommits++
-	for i := idx; i < uint(len(n.commitWaitingOnPlayers)); i++ {
-		// block us on future ticks
-		n.commitWaitingOnPlayers[i]++
-	}
 	p = binary.LittleEndian.AppendUint32(p[:0], uint32(remoteNow))
-	n.lk.Unlock()
-
-	cleanupPlayerReadEdge := func() {
-		// player disconnected, cleanup read edge
-		n.lk.Lock()
-		defer n.lk.Unlock()
-
-		n.playersBlockingCommits--
-		for i := remoteNow - n.rollback.Commit.Now; i < state.Time(len(n.commitWaitingOnPlayers)); i++ {
-			// stop blocking yet to be commited ticks
-			n.commitWaitingOnPlayers[i].decrement()
-		}
-		if n.cleanupCommits() {
-			n.sendCond.Broadcast()
-		}
-	}
 
 	if _, err := s.Write(p); err != nil {
-		cleanupPlayerReadEdge()
 		return err
 	}
 
 	if len(catchup) > 0 {
 		// Then let it catchup
 		if _, err := s.Write(catchup); err != nil {
-			cleanupPlayerReadEdge()
 			return err
 		}
 	}
+
+	readWasStarted = true
 
 	// Now start the main loops.
 	go func() {
@@ -442,9 +449,14 @@ func (n *Netcode) handleStreamAsServer(s network.Stream) (err error) {
 	}
 }
 
-// grabIdxInCommitWaitingOnPlayers returns the index in commitWaitingOnPlayers for the given time.
+// grabIdxInCommitWaitingOnPlayers returns the index in commitWaitingOnPlayers.
+func (n *Netcode) calcIdxInCommitWaitingOnPlayers(s state.Time) uint {
+	return uint(s-n.rollback.Commit.Now) - 1 // minus one since we can't block Commit.Now so n.commitWaitingOnPlayers[0] is for Commit.Now+1
+}
+
+// grabIdxInCommitWaitingOnPlayers returns the index in commitWaitingOnPlayers for the given time and make sure it exists.
 func (n *Netcode) grabIdxInCommitWaitingOnPlayers(s state.Time) uint {
-	idx := uint(s - n.rollback.Commit.Now)
+	idx := n.calcIdxInCommitWaitingOnPlayers(s)
 	if idx >= uint(len(n.commitWaitingOnPlayers)) {
 		old := n.commitWaitingOnPlayers
 		n.commitWaitingOnPlayers = append(n.commitWaitingOnPlayers, make([]playersBlockingCommits, idx+1-uint(len(n.commitWaitingOnPlayers)))...)
@@ -478,7 +490,7 @@ func (n *Netcode) cleanupCommits() (needToBroadcastSend bool) {
 		panic("cleanupCommits must only be called on the server")
 	}
 
-	if n.rollback.Commit.Now > n.rollback.Live.Now {
+	if n.rollback.Commit.Now >= n.rollback.Live.Now {
 		panic("wrong state n.rollback.Commit.Live > n.rollback.Live.Now")
 	}
 
@@ -492,7 +504,7 @@ func (n *Netcode) cleanupCommits() (needToBroadcastSend bool) {
 		needToBroadcastSend = n.tickCommit() || needToBroadcastSend
 	}
 	n.commitWaitingOnPlayers = n.commitWaitingOnPlayers[i:]
-	if n.playersBlockingCommits == 0 {
+	if n.playersBlockingCommits == 0 && len(n.commitWaitingOnPlayers) == 0 {
 		for n.rollback.Commit.Now+1 < n.rollback.Live.Now { // other clients might be in the future compared to us. Wait for us.
 			needToBroadcastSend = n.tickCommit() || needToBroadcastSend
 		}
@@ -504,8 +516,9 @@ func (n *Netcode) cleanupCommits() (needToBroadcastSend bool) {
 // Must be called holding [n.lk].
 // if needsToBroadcastSent == true the caller must call n.sendCond.Broadcast afterwards.
 func (n *Netcode) tickCommit() (needsToBroadcastSent bool) {
+	oldTick := n.rollback.Commit.Now
 	n.rollback.TickCommit()
-	return n.pushSent(0, 0, rpcgame.EncodeCommitTick()) // FIXME: should we change wire to not change tick id for meta stuff ?
+	return n.pushSent(0, oldTick, rpcgame.EncodeCommitTick()) // FIXME: should we change wire to not change tick id for meta stuff ?
 }
 
 // pushSent adds a sent packet to the send queue.
