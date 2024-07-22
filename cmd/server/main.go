@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/Jorropo/hh-scope/netcode"
@@ -30,7 +31,9 @@ func main() {
 
 func mainRet() error {
 	var targetStr string
+	var debugStartClients uint
 	flag.StringVar(&targetStr, "target", "", "target multiaddr to connect to, leave empty for server")
+	flag.UintVar(&debugStartClients, "debug-start-clients", 0, "start this many clients locally")
 	flag.Parse()
 
 	opts := []libp2p.Option{
@@ -65,6 +68,31 @@ func mainRet() error {
 	if err != nil {
 		return fmt.Errorf("creating host: %w", err)
 	}
+
+	if debugStartClients > 0 {
+		var laddr multiaddr.Multiaddr
+		for _, a := range h.Addrs() {
+			if strings.HasPrefix(a.String(), "/ip4/127.0.0.1/") {
+				laddr = a
+				goto startClients
+			}
+		}
+		goto couldntStartClients
+	startClients:
+		{
+			id := laddr.String() + "/p2p/" + h.ID().String()
+			for range debugStartClients {
+				cmd := exec.Command("./zig-out/bin/hh-scope", "-target", id)
+				cmd.Stdout = os.Stderr
+				cmd.Stderr = os.Stderr
+				err := cmd.Start()
+				if err != nil {
+					return fmt.Errorf("starting debug client: %w", err)
+				}
+			}
+		}
+	}
+couldntStartClients:
 
 	bus, err := h.EventBus().Subscribe(&event.EvtLocalAddressesUpdated{})
 	if err != nil {
