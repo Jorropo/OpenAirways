@@ -94,12 +94,12 @@ func New(h host.Host, render renderer, target peer.ID) (*Netcode, error) {
 		})
 		n.rollback.Live.Tick() // start with live in the future, commit must trail in the past.
 		go n.tickLoop(time.Now(), 0)
+		go n.renderLoop()
 	} else {
 		if err := n.startupClientStreams(); err != nil {
 			return nil, fmt.Errorf("startupClientStreams: %w", err)
 		}
 	}
-	go n.renderLoop()
 
 	return n, nil
 }
@@ -556,6 +556,7 @@ func (n *Netcode) renderLoop() {
 // for the client we need to wait until sendAfter to confirm (before we catchup).
 func (n *Netcode) tickLoop(start time.Time, sendAfter state.Time) {
 	const waitPerTick = time.Second / state.TickRate
+	var startedRenderLoop bool
 	for {
 		// Use a custom ticker to make sure we never get many ticks out of sync.
 		// If time.Sleep is so slow we missed let's say 2 ticks, then we tick twice.
@@ -563,6 +564,11 @@ func (n *Netcode) tickLoop(start time.Time, sendAfter state.Time) {
 		todo := dt / waitPerTick
 		if todo == 0 {
 			time.Sleep(waitPerTick - dt)
+			if !startedRenderLoop && n.target != "" {
+				// wait to be caught up to start the client renderloop other wise we messup all of zig's attempt to time us properly.
+				startedRenderLoop = true
+				go n.renderLoop()
+			}
 			continue // retry check timing once it should be big enough
 		} else {
 			start = start.Add(todo * waitPerTick) // jump forward
