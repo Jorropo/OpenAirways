@@ -99,7 +99,7 @@ pub fn main() anyerror!void {
 
         state.mu.lock();
         const nanosPerTick = std.time.ns_per_s / state.tickRate;
-        const deltans = frameClock - @as(i64, state.now) * nanosPerTick;
+        const deltans = frameClock - @as(i64, state.now - state.timerBase) * nanosPerTick;
         state.deltaTicks = @as(f32, @floatFromInt(deltans)) / @as(f32, @floatFromInt(nanosPerTick));
 
         var highlighted_plane: Plane = undefined;
@@ -205,6 +205,7 @@ const State = struct {
     mu: Thread.Mutex = .{},
     initFinished: Thread.Semaphore = .{},
     timer: std.time.Timer = undefined,
+    timerBase: u32 = 0,
 };
 
 fn start_server(allocator: Allocator, proc: *Child, state: *State) !Thread {
@@ -220,14 +221,14 @@ fn read_data(allocator: Allocator, proc: *Child, state: *State) !void {
 
     var init = [_]u8{0} ** (4 + 1 + 4);
     _ = try out.readAll(&init);
-    state.timer = try std.time.Timer.start(); // try to synchronize clock good enough with the server
     state.tickRate = r_u32(init[0..4]);
     if (init[4] >= 1 << 5) {
         return error.OutOfRange;
     }
     const subPixelFactor: f32 = @floatFromInt(@as(i32, 1) << @intCast(init[4]));
     state.planeSpeed = r_f32(init[5..9]) / subPixelFactor;
-    state.initFinished.post();
+
+    var received: u2 = 3;
 
     while (proc.term == null) {
         var header: [8]u8 = [_]u8{0} ** 8;
@@ -241,6 +242,14 @@ fn read_data(allocator: Allocator, proc: *Child, state: *State) !void {
 
         const now = r_u32(header[0..4]);
         buffered_state.now = now;
+        if (received != 0) {
+            received -= 1;
+            if (received == 1) { // use the second tick to start timer because it's more reliable due to multiplayer startup lag
+                state.timer = try std.time.Timer.start();
+                state.timerBase = now;
+                state.initFinished.post();
+            }
+        }
 
         const old = buffered_state.planes;
         buffered_state.planes = try allocator.alloc(Plane, plane_count);
