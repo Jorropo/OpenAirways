@@ -156,6 +156,8 @@ couldntStartClients:
 func makeRenderCallback() func(*state.State, func()) {
 	var hasDoneInit bool
 	var sendReuse []byte
+	var oldCamera state.Rect
+
 	return func(s *state.State, unlock func()) {
 		content := sendReuse[:0]
 		if !hasDoneInit {
@@ -176,6 +178,8 @@ func makeRenderCallback() func(*state.State, func()) {
 			b = u32(b, uint32(state.Speed))
 			b = rect(b, s.MapSize)
 			b = rect(b, s.CameraSize)
+
+			oldCamera = s.CameraSize
 		}
 
 		size := 2 + // OpCode
@@ -197,6 +201,13 @@ func makeRenderCallback() func(*state.State, func()) {
 			b = v2(b, pos)
 			b = u16(b, uint16(p.WantHeading))
 			b = u16(b, uint16(heading))
+		}
+
+		if oldCamera != s.CameraSize {
+			oldCamera = s.CameraSize
+			content, b = appendNewBufferAfter(b, 18)
+			b = u16(b, uint16(rpcgame.MapResize))
+			b = rect(b, oldCamera)
 		}
 		unlock()
 

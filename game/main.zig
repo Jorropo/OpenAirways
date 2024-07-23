@@ -1,19 +1,14 @@
 const rl = @import("raylib");
-const zm = @import("zmath");
+const Game = @import("Game.zig");
 
 const std = @import("std");
 const print = std.debug.print;
-const math = std.math;
 
-const Thread = std.Thread;
-const Allocator = std.mem.Allocator;
 const Child = std.process.Child;
-const ArrayList = std.ArrayList;
 
-const V2 = rl.Vector2;
-
-const screen = V2.init(1280, 720);
-const canvas = V2.init(960, 560);
+const Plane = Game.Plane;
+const V2 = Game.V2;
+const screen = Game.screen;
 
 pub fn main() anyerror!void {
     rl.setConfigFlags(rl.ConfigFlags{
@@ -58,37 +53,51 @@ pub fn main() anyerror!void {
     const plane_h: f32 = @floatFromInt(plane_img.height);
     const plane_size = V2.init(plane_w, plane_h);
 
-    var input_state: InputState = .none;
+    var cl: Client = .{};
 
-    game.initFinished.wait();
+    game.read_state.init.wait();
     server_args[0] = programName; // restore for argsFree
     std.process.argsFree(allocator, server_args);
+
+    // setup camera
+    {
+        // make target center of visible canvas
+        const canvas = game.state.camera_size;
+        cl.camera.target = V2{
+            .x = canvas.x + canvas.width / 2,
+            .y = canvas.y + canvas.height / 2,
+        };
+
+        // zoom camera to make width of canvas fully visible (ignore height)
+        cl.camera.zoom = screen.x / canvas.width;
+    }
 
     while (!rl.windowShouldClose()) { // Detect window close button or ESC key
         rl.beginDrawing();
         const frameClock: i64 = @intCast(game.timer.read());
 
+        // input handling
         const mouse_pos = rl.getMousePosition();
-        switch (input_state) {
+        switch (cl.input) {
             .plane_target => |s| blk: {
                 if (rl.isMouseButtonReleased(rl.MouseButton.mouse_button_left)) {
-                    input_state = .none;
+                    cl.input = .none;
                     try game.give_plane_heading(
-                        s.plane_id,
+                        s.id,
                         s.start,
                         mouse_pos,
                     );
                     break :blk;
                 }
-                input_state.plane_target.current = mouse_pos;
+                cl.input.plane_target.current = mouse_pos;
             },
 
             .none => {
                 if (rl.isMouseButtonPressed(rl.MouseButton.mouse_button_left)) {
-                    const clicked = Plane.intersecting_plane(state, plane_size, mouse_pos);
+                    const clicked = Plane.intersecting_plane(state, plane_size, cl.camera, mouse_pos);
                     if (clicked) |p| {
-                        input_state = .{ .plane_target = .{
-                            .plane_id = p.id,
+                        cl.input = .{ .plane_target = .{
+                            .id = p.id,
                             .start = mouse_pos,
                             .current = mouse_pos,
                         } };
@@ -97,43 +106,56 @@ pub fn main() anyerror!void {
             },
         }
 
+        // lerp camera zoom
+        const target_zoom = screen.x / game.state.camera_size.width;
+        cl.camera.zoom = std.math.lerp(cl.camera.zoom, target_zoom, 0.1);
+
         defer rl.endDrawing();
         defer rl.drawFPS(8, 8); // always draw last
 
         rl.clearBackground(rl.Color.white);
 
-        game.mu.lock();
-        const nanosPerTick = std.time.ns_per_s / state.tickRate;
-        const deltans = frameClock - @as(i64, state.now - game.timerBase) * nanosPerTick;
-        state.deltaTicks = @as(f32, @floatFromInt(deltans)) / @as(f32, @floatFromInt(nanosPerTick));
+        {
+            game.mu.lock();
+            defer game.mu.unlock();
+            cl.camera.begin();
+            defer cl.camera.end();
 
-        var highlighted_plane: Plane = undefined;
+            const nanosPerTick = std.time.ns_per_s / state.tick_rate;
+            const deltans = frameClock - @as(i64, state.now - game.timer_base) * nanosPerTick;
+            state.delta_ticks = @as(f32, @floatFromInt(deltans)) / @as(f32, @floatFromInt(nanosPerTick));
 
-        for (state.planes) |plane| {
-            var highlight = false;
-            if (input_state == .plane_target and input_state.plane_target.plane_id == plane.id) {
-                highlight = true;
-                highlighted_plane = plane;
+            var highlighted_plane: Plane = undefined;
+
+            for (state.planes) |plane| {
+                var highlight = false;
+                if (cl.input == .plane_target and cl.input.plane_target.id == plane.id) {
+                    highlight = true;
+                    highlighted_plane = plane;
+                }
+                try plane.draw(allocator, state, plane_img, plane_size, highlight, true);
             }
-            try plane.draw(allocator, state, plane_img, plane_size, highlight, true);
-        }
 
-        if (input_state == .plane_target) {
-            const loc = highlighted_plane.canvas_loc(state);
-            rl.drawLineEx(loc, input_state.plane_target.current, 4, rl.Color.red);
+            if (cl.input == .plane_target) {
+                const loc = highlighted_plane.current_pos(state);
+                const current_in_world = rl.getScreenToWorld2D(cl.input.plane_target.current, cl.camera);
+                rl.drawLineEx(loc, current_in_world, 4, rl.Color.red);
+            }
         }
-
-        game.mu.unlock();
     }
 
     _ = try game.server_proc.kill();
     game.server_thread.join();
 }
 
-const InputPlaneTarget = struct {
-    plane_id: u32,
-    start: V2,
-    current: V2,
+const Client = struct {
+    input: InputState = .none,
+    camera: rl.Camera2D = .{ // centered around 0,0
+        .offset = .{ .x = screen.x / 2, .y = screen.y / 2 },
+        .target = .{ .x = 0, .y = 0 },
+        .rotation = 0,
+        .zoom = 1,
+    },
 };
 
 const InputState = union(enum) {
@@ -141,233 +163,8 @@ const InputState = union(enum) {
     none,
 };
 
-const Plane = struct {
-    id: u32 = 0,
-    pos: V2 = .{},
-    want_heading: u16 = 0,
-    heading: u16 = 0,
-
-    fn draw(self: Plane, allocator: Allocator, state: *State, img: rl.Texture, size: V2, highlight: bool, draw_debug: bool) !void {
-        const full_image = rect(V2.zero(), size);
-        const origin = size.scale(0.5);
-        const center = self.canvas_loc(state);
-
-        img.drawPro(
-            full_image,
-            rect(center, size),
-            origin,
-            self.rot(),
-            rl.Color.white,
-        );
-
-        const top_left = center.subtract(origin);
-        const top_right = top_left.add(V2.init(size.x, 0));
-
-        if (highlight) {
-            rl.drawRectangleRoundedLinesEx(rect(top_left, size), 64, 64, 4, rl.Color.red);
-        }
-
-        if (draw_debug) {
-            const debug_text = try std.fmt.allocPrintZ(allocator, "id={}, pos=[{d}, {d}]", .{ self.id, self.pos.x, self.pos.y });
-            rl.drawTextEx(rl.getFontDefault(), debug_text, top_right, 16, 1, rl.Color.red);
-            allocator.free(debug_text);
-        }
-    }
-
-    fn intersecting_plane(state: *State, size: V2, mouse_pos: V2) ?Plane {
-        for (state.planes) |p| {
-            const loc = p.canvas_loc(state);
-            if (rl.checkCollisionPointCircle(mouse_pos, loc, size.x / 2)) {
-                return p;
-            }
-        }
-        return null;
-    }
-
-    // returns the center position in screen-space of the plane.
-    fn canvas_loc(self: Plane, state: *State) V2 {
-        const rad = @as(f32, @floatFromInt(self.heading)) / 65536 * math.tau;
-        const distance = state.deltaTicks * state.planeSpeed;
-
-        const travelled = V2.init(math.sin(rad), math.cos(rad)).scale(distance);
-
-        const interpolated = self.pos.add(travelled).multiply(flip_y);
-        const in_screen_space = interpolated.add(canvas.scale(0.5)).multiply(screen).divide(canvas);
-
-        return in_screen_space;
-    }
-
-    fn rot(self: Plane) f32 {
-        const deg: f32 = @as(f32, @floatFromInt(self.heading)) / 65536;
-        return deg * 360;
-    }
+const InputPlaneTarget = struct {
+    id: u32,
+    start: V2,
+    current: V2,
 };
-
-const Game = struct {
-    allocator: Allocator,
-
-    state: State = .{},
-
-    server_thread: Thread = undefined,
-    server_proc: Child,
-
-    mu: Thread.Mutex = .{},
-    initFinished: Thread.Semaphore = .{},
-    timer: std.time.Timer = undefined,
-    timerBase: u32 = 0,
-
-    const OpCode = enum(u16) {
-        GivePlaneHeading = 0x0001,
-
-        GameInit = 0x0800,
-        StateUpdate = 0x0801,
-        MapResize = 0x0802,
-    };
-
-    const PacketSize = enum(usize) {
-        GivePlaneHeading = 8,
-
-        GameInit = 43,
-        // StateUpdate = dynamic,
-        MapResize = 18,
-
-        const plane_size = 4 + // id
-            4 + // x
-            4 + // y
-            2 + // wantHeading
-            2; // heading
-    };
-
-    fn start_server(self: *Game) !void {
-        self.server_thread = try Thread.spawn(.{}, handle_inbound, .{self});
-    }
-
-    fn handle_inbound(self: *Game) !void {
-        var state = &self.state;
-        const proc = &self.server_proc;
-
-        try self.server_proc.spawn();
-        const out = self.server_proc.stdout orelse return;
-
-        var init = [_]u8{0} ** (@intFromEnum(Game.PacketSize.GameInit));
-        _ = try out.readAll(&init);
-
-        if (r_u16(init[0..2]) != @intFromEnum(Game.OpCode.GameInit))
-            @panic("expected first packet from server to be GameInit");
-
-        self.timer = try std.time.Timer.start(); // try to synchronize clock good enough with the server
-        state.tickRate = r_u32(init[2..6]);
-        if (init[6] >= 1 << 5) return error.OutOfRange;
-        const subPixelFactor: f32 = @floatFromInt(@as(i32, 1) << @intCast(init[6]));
-        state.planeSpeed = r_f32(init[7..11]) / subPixelFactor;
-
-        var received: u2 = 3;
-
-        while (proc.term == null) {
-            var header: [10]u8 = [_]u8{0} ** 10;
-            _ = out.readAll(&header) catch break;
-            const op = r_u16(header[0..2]);
-            if (op == 0) break;
-
-            if (op != @intFromEnum(Game.OpCode.StateUpdate)) {
-                @panic("unsupported op code");
-            }
-            const now = r_u32(header[2..6]);
-            const plane_count = r_u32(header[6..10]);
-
-            if (received != 0) {
-                received -= 1;
-                if (received == 1) { // use the second tick to start timer because it's more reliable due to multiplayer startup lag
-                    self.timer = try std.time.Timer.start();
-                    self.timerBase = now;
-                    self.initFinished.post();
-                }
-            }
-
-            // fetch quantity of planes
-            const raw_planes = try self.allocator.alloc(u8, 16 * plane_count);
-            defer self.allocator.free(raw_planes);
-            _ = out.readAll(raw_planes) catch break;
-
-            self.mu.lock();
-            defer self.mu.unlock();
-
-            self.allocator.free(state.planes);
-
-            // read state data
-            state.now = now;
-            state.planes = try self.allocator.alloc(Plane, plane_count);
-
-            for (0..plane_count) |i| {
-                const offset = PacketSize.plane_size * i;
-
-                const b = raw_planes[offset..];
-                const id = r_u32(b[0..4]);
-                const x = r_f32(b[4..8]) / subPixelFactor;
-                const y = r_f32(b[8..12]) / subPixelFactor;
-
-                const want_heading = r_u16(b[12..14]);
-                const heading = r_u16(b[14..16]);
-
-                state.planes[i].id = id;
-                state.planes[i].pos = V2.init(x, y);
-                state.planes[i].want_heading = want_heading;
-                state.planes[i].heading = heading;
-            }
-        }
-
-        self.allocator.free(state.planes);
-    }
-
-    fn give_plane_heading(self: Game, plane_id: u32, start: V2, target: V2) !void {
-        // convert from screen space to canvas space
-        const v = target.subtract(start).multiply(flip_y);
-        const h_rad = @mod(math.atan2(v.x, v.y) / math.tau, 1);
-        const heading: u16 = math.lossyCast(u16, h_rad * 65536);
-
-        var b = [_]u8{0} ** (2 + 4 + 2);
-        w_u16(b[0..2], @intFromEnum(OpCode.GivePlaneHeading));
-        w_u32(b[2..6], plane_id);
-        w_u16(b[6..8], heading);
-
-        _ = try self.server_proc.stdin.?.writeAll(&b);
-    }
-};
-
-const State = struct {
-    now: u32 = 0,
-    deltaTicks: f32 = 0,
-    tickRate: u32 = 0,
-    planeSpeed: f32 = 0,
-    planes: []Plane = &[_]Plane{},
-};
-
-fn r_u16(b: *const [2]u8) u16 {
-    return std.mem.readInt(u16, b, .little);
-}
-
-fn r_u32(b: *const [4]u8) u32 {
-    return std.mem.readInt(u32, b, .little);
-}
-
-fn r_f32(b: *const [4]u8) f32 {
-    return @floatFromInt(r_i32(b));
-}
-
-fn r_i32(b: *const [4]u8) i32 {
-    return std.mem.readInt(i32, b, .little);
-}
-
-fn w_u16(b: *[2]u8, x: u16) void {
-    std.mem.writeInt(u16, b, x, .little);
-}
-
-fn w_u32(b: *[4]u8, x: u32) void {
-    std.mem.writeInt(u32, b, x, .little);
-}
-
-const flip_y = V2.init(1, -1);
-
-fn rect(pos: V2, size: V2) rl.Rectangle {
-    return rl.Rectangle.init(pos.x, pos.y, size.x, size.y);
-}
