@@ -37,8 +37,18 @@ pub fn build(b: *std.Build) !void {
     //
     //
 
-    const buildServerStep = BuildServerStep.create(b);
-    b.getInstallStep().dependOn(&buildServerStep.step);
+    const server_build_mode = b.option(BuildServerMode, "server-build", "Server build mode") orelse BuildServerMode.default;
+
+    const main_pkg = b.path("cmd/server").getPath(b);
+    const out = b.path("game-server").getPath(b);
+
+    const build_server = std.Build.Step.Run.create(b, "build server");
+    build_server.addArgs(&.{ "go", "build", "-o", out, main_pkg });
+    build_server.setEnvironmentVariable("GOEXPERIMENT", "rangefunc");
+
+    if (server_build_mode == .default) {
+        b.getInstallStep().dependOn(&build_server.step);
+    }
 
     b.installArtifact(exe);
 
@@ -69,44 +79,3 @@ pub fn build(b: *std.Build) !void {
 }
 
 const BuildServerMode = enum { default, skip };
-
-const BuildServerStep = struct {
-    step: Step,
-    mode: BuildServerMode,
-
-    pub fn create(b: *std.Build) *BuildServerStep {
-        const server_build_mode = b.option(BuildServerMode, "server-build", "Server build mode") orelse BuildServerMode.default;
-
-        const ptr = b.allocator.create(BuildServerStep) catch @panic("OOM");
-        ptr.* = .{
-            .step = Step.init(.{
-                .id = .custom,
-                .name = "build server",
-                .owner = b,
-                .makeFn = make,
-            }),
-            .mode = server_build_mode,
-        };
-        return ptr;
-    }
-
-    pub fn make(step: *Step, _: std.Progress.Node) anyerror!void {
-        const self: *BuildServerStep = @fieldParentPtr("step", step);
-        const b = step.owner;
-
-        switch (self.mode) {
-            .default => {
-                const main_pkg = b.path("cmd/server").getPath(b);
-                const out = b.path("game-server").getPath(b);
-                var go_build = [_][]const u8{ "go", "build", "-o", out, main_pkg };
-                var child = Child.init(&go_build, b.allocator);
-                var current = try std.process.getEnvMap(b.allocator);
-                defer current.deinit();
-                _ = try current.put("GOEXPERIMENT", "rangefunc"); // FIXME: remove once updating to go1.23
-                child.env_map = &current;
-                _ = try child.spawnAndWait();
-            },
-            .skip => {},
-        }
-    }
-};
