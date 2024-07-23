@@ -102,7 +102,6 @@ fn read_init_packet(self: *Game) !void {
     self.state.plane_speed = r_f32(packet[5..9]) / self.read_state.sub_pixel;
     self.state.map_size = r_rect(packet[9..25]);
     self.state.camera_size = r_rect(packet[25..41]);
-    print("got camera init: {any}; {any}\n", .{ self.state.map_size, self.state.camera_size });
 }
 
 fn read_state_update_packet(self: *Game) !void {

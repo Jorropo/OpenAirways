@@ -49,69 +49,23 @@ pub fn main() anyerror!void {
     const plane_img = rl.loadTexture("assets/plane_1.png");
     defer plane_img.unload();
 
-    const plane_w: f32 = @floatFromInt(plane_img.width);
-    const plane_h: f32 = @floatFromInt(plane_img.height);
-    const plane_size = V2.init(plane_w, plane_h);
-
-    var cl: Client = .{};
+    var cl: Client = .{
+        .plane_size = .{ .x = @floatFromInt(plane_img.width), .y = @floatFromInt(plane_img.height) },
+    };
 
     game.read_state.init.wait();
     server_args[0] = programName; // restore for argsFree
     std.process.argsFree(allocator, server_args);
 
     // setup camera
-    cl.lerp_camera(game.state.camera_size, 1);
+    cl.lerp_camera(state.camera_size, 1);
 
     while (!rl.windowShouldClose()) { // Detect window close button or ESC key
         rl.beginDrawing();
         const frameClock: i64 = @intCast(game.timer.read());
 
-        // input handling
-        const mouse_pos = rl.getMousePosition();
-        switch (cl.input) {
-            .plane_target => |target| blk: {
-                cl.input.plane_target.current = mouse_pos;
-
-                if (rl.isMouseButtonReleased(rl.MouseButton.mouse_button_left)) {
-                    var plane_pos: ?V2 = null;
-                    for (state.planes) |p| {
-                        if (p.id == target.id) {
-                            plane_pos = rl.getWorldToScreen2D(p.current_pos(state), cl.camera);
-                            break;
-                        }
-                    }
-
-                    // the plane no longer exists. reached waypoint while held?
-                    if (plane_pos == null) {
-                        print("plane held ({}) no longer able to be found. planes: {any}\n", .{ target.id, state.planes });
-                        cl.input = .none;
-                        break :blk;
-                    }
-
-                    cl.input = .none;
-                    try game.give_plane_heading(
-                        target.id,
-                        plane_pos.?,
-                        mouse_pos,
-                    );
-                    break :blk;
-                }
-            },
-
-            .none => {
-                if (rl.isMouseButtonPressed(rl.MouseButton.mouse_button_left)) {
-                    const clicked = Plane.intersecting_plane(state, plane_size, cl.camera, mouse_pos);
-                    if (clicked) |p| {
-                        cl.input = .{ .plane_target = .{
-                            .id = p.id,
-                            .current = mouse_pos,
-                        } };
-                    }
-                }
-            },
-        }
-
-        cl.lerp_camera(game.state.camera_size, 0.1);
+        try cl.handle_input(&game);
+        cl.lerp_camera(state.camera_size, 0.1);
 
         defer rl.endDrawing();
         defer rl.drawFPS(8, 8); // always draw last
@@ -131,7 +85,7 @@ pub fn main() anyerror!void {
             for (state.planes) |plane| {
                 const highlight = cl.input == .plane_target and cl.input.plane_target.id == plane.id;
 
-                try plane.draw(allocator, state, plane_img, plane_size, highlight, true);
+                try plane.draw(allocator, state, plane_img, cl.plane_size, highlight, true);
                 if (highlight) {
                     const loc = plane.current_pos(state);
                     const current_in_world = rl.getScreenToWorld2D(cl.input.plane_target.current, cl.camera);
@@ -146,6 +100,8 @@ pub fn main() anyerror!void {
 }
 
 const Client = struct {
+    plane_size: V2,
+
     input: InputState = .none,
     camera: rl.Camera2D = .{ // centered around 0,0
         .offset = .{ .x = screen.x / 2, .y = screen.y / 2 },
@@ -153,6 +109,13 @@ const Client = struct {
         .rotation = 0,
         .zoom = 1,
     },
+
+    fn handle_input(cl: *Client, game: *Game) !void {
+        switch (cl.input) {
+            .plane_target => try InputPlaneTarget.handle(cl, game),
+            .none => try InputState.handle_none(cl, game),
+        }
+    }
 
     fn lerp_camera(cl: *Client, camera_size: rl.Rectangle, n: f32) void {
         const target = V2{
@@ -172,9 +135,53 @@ const Client = struct {
 const InputState = union(enum) {
     plane_target: InputPlaneTarget,
     none,
+
+    fn handle_none(cl: *Client, game: *Game) !void {
+        const mouse_pos = rl.getMousePosition();
+
+        if (rl.isMouseButtonPressed(rl.MouseButton.mouse_button_left)) {
+            const clicked = Plane.intersecting_plane(&game.state, cl.plane_size, cl.camera, mouse_pos);
+            if (clicked) |p| {
+                cl.input = .{ .plane_target = .{
+                    .id = p.id,
+                    .current = mouse_pos,
+                } };
+            }
+        }
+    }
 };
 
 const InputPlaneTarget = struct {
     id: u32,
     current: V2,
+
+    fn handle(cl: *Client, game: *Game) !void {
+        const target = cl.input.plane_target;
+        const mouse_pos = rl.getMousePosition();
+
+        cl.input.plane_target.current = mouse_pos;
+
+        if (rl.isMouseButtonReleased(rl.MouseButton.mouse_button_left)) {
+            var plane_pos: ?V2 = null;
+            for (game.state.planes) |p| {
+                if (p.id == target.id) {
+                    plane_pos = rl.getWorldToScreen2D(p.current_pos(&game.state), cl.camera);
+                    break;
+                }
+            }
+
+            // the plane no longer exists. reached waypoint while held?
+            if (plane_pos == null) {
+                cl.input = .none;
+                return;
+            }
+
+            cl.input = .none;
+            try game.give_plane_heading(
+                target.id,
+                plane_pos.?,
+                mouse_pos,
+            );
+        }
+    }
 };
