@@ -81,6 +81,7 @@ func New(h host.Host, render renderer, target peer.ID) (*Netcode, error) {
 	}
 	n.stateCond.L = &n.lk
 	n.sendCond.L = &n.lk
+	n.rollback.Commit.Airports = []state.Airport{{}} // default airport, centered, heading 360/180
 	n.rollback.Commit.MapSize = state.Rect{X: -960, Y: -540, W: 1920, H: 1080}
 	n.rollback.Commit.CameraSize = state.Rect{X: -480, Y: -270, W: 960, H: 540}
 	n.rollback.Live.Copy(&n.rollback.Commit)

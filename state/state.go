@@ -98,10 +98,17 @@ func (p *Plane) Turn(now Time, heading Rot16) {
 	p.time = now
 }
 
+type Airport struct {
+	ID      uint8
+	Pos     V2
+	Heading Rot16
+}
+
 type State struct {
 	nextPlaneId uint32 // monotonic increasing plane id
 	Now         Time
 	Planes      []Plane
+	Airports    []Airport
 	MapSize     Rect
 	CameraSize  Rect
 }
@@ -158,6 +165,7 @@ func (s *State) Copy(o *State) {
 		Now:         o.Now,
 		nextPlaneId: o.nextPlaneId,
 		Planes:      append(s.Planes[:0], o.Planes...),
+		Airports:    append(s.Airports[:0], s.Airports...),
 		MapSize:     o.MapSize,
 		CameraSize:  o.CameraSize,
 	}

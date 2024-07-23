@@ -47,7 +47,7 @@ pub const OpCode = enum(u16) {
 pub const PacketSize = enum(usize) {
     GivePlaneHeading = 6,
 
-    GameInit = 41,
+    GameInit = 42, // NOTE: 42nd byte is size of airports.
     // StateUpdate = dynamic,
     MapResize = 16,
 
@@ -55,6 +55,11 @@ pub const PacketSize = enum(usize) {
         4 + // x
         4 + // y
         2 + // wantHeading
+        2; // heading
+
+    const airport_size = 1 + // id
+        4 + // x
+        4 + // y
         2; // heading
 };
 
@@ -102,6 +107,26 @@ fn read_init_packet(self: *Game) !void {
     self.state.plane_speed = r_f32(packet[5..9]) / self.read_state.sub_pixel;
     self.state.map_size = r_rect(packet[9..25]);
     self.state.camera_size = r_rect(packet[25..41]);
+
+    const airport_count = packet[41];
+    const airport_bytes = try self.allocator.alloc(u8, PacketSize.airport_size * airport_count);
+    defer self.allocator.free(airport_bytes);
+    _ = try out.readAll(airport_bytes);
+
+    self.state.airports = try self.allocator.alloc(Airport, airport_count);
+    for (0..airport_count) |i| {
+        const offset = PacketSize.airport_size * i;
+        const b = airport_bytes[offset..];
+
+        self.state.airports[i] = .{
+            .id = b[0],
+            .pos = .{
+                .x = r_f32(b[1..5]) / self.read_state.sub_pixel,
+                .y = r_f32(b[5..9]) / self.read_state.sub_pixel,
+            },
+            .heading = r_u16(b[9..11]),
+        };
+    }
 }
 
 fn read_state_update_packet(self: *Game) !void {
@@ -185,6 +210,7 @@ pub const State = struct {
     plane_speed: f32 = 0,
 
     planes: []Plane = &[_]Plane{},
+    airports: []Airport = &[_]Airport{},
 
     map_size: rl.Rectangle = rl.Rectangle.init(0, 0, 0, 0),
     camera_size: rl.Rectangle = rl.Rectangle.init(0, 0, 0, 0),
@@ -249,6 +275,12 @@ pub const Plane = struct {
         const deg: f32 = @as(f32, @floatFromInt(self.heading)) / 65536;
         return deg * 360;
     }
+};
+
+const Airport = struct {
+    id: u8 = 0,
+    pos: V2 = .{ .x = 0, .y = 0 },
+    heading: u16 = 0,
 };
 
 const flip_y = V2.init(1, -1);
