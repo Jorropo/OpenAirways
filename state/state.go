@@ -121,13 +121,6 @@ func (s *State) Tick() {
 	for i := range s.Planes {
 		s.Planes[i].tick(s.Now)
 	}
-
-	if s.Now%(TickRate*6) == 0 && s.Now > 0 {
-		s.CameraSize.X -= 80
-		s.CameraSize.W += 160
-		s.CameraSize.Y -= 45
-		s.CameraSize.H += 90
-	}
 }
 
 func (s *State) Apply(c rpcgame.Command) {

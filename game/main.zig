@@ -60,17 +60,7 @@ pub fn main() anyerror!void {
     std.process.argsFree(allocator, server_args);
 
     // setup camera
-    {
-        // make target center of visible canvas
-        const canvas = game.state.camera_size;
-        cl.camera.target = V2{
-            .x = canvas.x + canvas.width / 2,
-            .y = canvas.y + canvas.height / 2,
-        };
-
-        // zoom camera to make width of canvas fully visible (ignore height)
-        cl.camera.zoom = screen.x / canvas.width;
-    }
+    cl.lerp_camera(game.state.camera_size, 1);
 
     while (!rl.windowShouldClose()) { // Detect window close button or ESC key
         rl.beginDrawing();
@@ -79,17 +69,33 @@ pub fn main() anyerror!void {
         // input handling
         const mouse_pos = rl.getMousePosition();
         switch (cl.input) {
-            .plane_target => |s| blk: {
+            .plane_target => |target| blk: {
+                cl.input.plane_target.current = mouse_pos;
+
                 if (rl.isMouseButtonReleased(rl.MouseButton.mouse_button_left)) {
+                    var plane_pos: ?V2 = null;
+                    for (state.planes) |p| {
+                        if (p.id == target.id) {
+                            plane_pos = rl.getWorldToScreen2D(p.current_pos(state), cl.camera);
+                            break;
+                        }
+                    }
+
+                    // the plane no longer exists. reached waypoint while held?
+                    if (plane_pos == null) {
+                        print("plane held ({}) no longer able to be found. planes: {any}\n", .{ target.id, state.planes });
+                        cl.input = .none;
+                        break :blk;
+                    }
+
                     cl.input = .none;
                     try game.give_plane_heading(
-                        s.id,
-                        s.start,
+                        target.id,
+                        plane_pos.?,
                         mouse_pos,
                     );
                     break :blk;
                 }
-                cl.input.plane_target.current = mouse_pos;
             },
 
             .none => {
@@ -98,7 +104,6 @@ pub fn main() anyerror!void {
                     if (clicked) |p| {
                         cl.input = .{ .plane_target = .{
                             .id = p.id,
-                            .start = mouse_pos,
                             .current = mouse_pos,
                         } };
                     }
@@ -106,9 +111,7 @@ pub fn main() anyerror!void {
             },
         }
 
-        // lerp camera zoom
-        const target_zoom = screen.x / game.state.camera_size.width;
-        cl.camera.zoom = std.math.lerp(cl.camera.zoom, target_zoom, 0.1);
+        cl.lerp_camera(game.state.camera_size, 0.1);
 
         defer rl.endDrawing();
         defer rl.drawFPS(8, 8); // always draw last
@@ -125,21 +128,15 @@ pub fn main() anyerror!void {
             const deltans = frameClock - @as(i64, state.now - game.timer_base) * nanosPerTick;
             state.delta_ticks = @as(f32, @floatFromInt(deltans)) / @as(f32, @floatFromInt(nanosPerTick));
 
-            var highlighted_plane: Plane = undefined;
-
             for (state.planes) |plane| {
-                var highlight = false;
-                if (cl.input == .plane_target and cl.input.plane_target.id == plane.id) {
-                    highlight = true;
-                    highlighted_plane = plane;
-                }
-                try plane.draw(allocator, state, plane_img, plane_size, highlight, true);
-            }
+                const highlight = cl.input == .plane_target and cl.input.plane_target.id == plane.id;
 
-            if (cl.input == .plane_target) {
-                const loc = highlighted_plane.current_pos(state);
-                const current_in_world = rl.getScreenToWorld2D(cl.input.plane_target.current, cl.camera);
-                rl.drawLineEx(loc, current_in_world, 4, rl.Color.red);
+                try plane.draw(allocator, state, plane_img, plane_size, highlight, true);
+                if (highlight) {
+                    const loc = plane.current_pos(state);
+                    const current_in_world = rl.getScreenToWorld2D(cl.input.plane_target.current, cl.camera);
+                    rl.drawLineEx(loc, current_in_world, 4, rl.Color.red);
+                }
             }
         }
     }
@@ -156,6 +153,20 @@ const Client = struct {
         .rotation = 0,
         .zoom = 1,
     },
+
+    fn lerp_camera(cl: *Client, camera_size: rl.Rectangle, n: f32) void {
+        const target = V2{
+            .x = camera_size.x + camera_size.width / 2,
+            .y = camera_size.y + camera_size.height / 2,
+        };
+        const zoom = screen.x / camera_size.width;
+
+        cl.camera.target = V2{
+            .x = std.math.lerp(cl.camera.target.x, target.x, n),
+            .y = std.math.lerp(cl.camera.target.y, target.y, n),
+        };
+        cl.camera.zoom = std.math.lerp(cl.camera.zoom, zoom, n);
+    }
 };
 
 const InputState = union(enum) {
@@ -165,6 +176,5 @@ const InputState = union(enum) {
 
 const InputPlaneTarget = struct {
     id: u32,
-    start: V2,
     current: V2,
 };
