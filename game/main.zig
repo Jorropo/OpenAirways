@@ -72,9 +72,13 @@ pub fn main() anyerror!void {
 
         rl.clearBackground(rl.Color.white);
 
+        game.mu.lock();
+
+        // don't draw with the camera. airports should have a static size.
+        for (state.airports) |airport| {
+            try airport.draw(cl.camera);
+        }
         {
-            game.mu.lock();
-            defer game.mu.unlock();
             cl.camera.begin();
             defer cl.camera.end();
 
@@ -93,6 +97,7 @@ pub fn main() anyerror!void {
                 }
             }
         }
+        game.mu.unlock();
     }
 
     _ = try game.server_proc.kill();

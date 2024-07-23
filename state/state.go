@@ -165,7 +165,7 @@ func (s *State) Copy(o *State) {
 		Now:         o.Now,
 		nextPlaneId: o.nextPlaneId,
 		Planes:      append(s.Planes[:0], o.Planes...),
-		Airports:    append(s.Airports[:0], s.Airports...),
+		Airports:    append(s.Airports[:0], o.Airports...),
 		MapSize:     o.MapSize,
 		CameraSize:  o.CameraSize,
 	}

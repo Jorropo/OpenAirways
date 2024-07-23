@@ -79,14 +79,14 @@ fn handle_inbound(self: *Game) !void {
         _ = out.readAll(&header) catch break;
 
         switch (r_u16(header[0..2])) {
-            @intFromEnum(OpCode.GameInit) => try self.read_init_packet(),
-            @intFromEnum(OpCode.StateUpdate) => try self.read_state_update_packet(),
-            @intFromEnum(OpCode.MapResize) => try self.read_map_resize_packet(),
+            @intFromEnum(OpCode.GameInit) => self.read_init_packet() catch break,
+            @intFromEnum(OpCode.StateUpdate) => self.read_state_update_packet() catch break,
             else => |v| print("error: unknown op code from server: {}\n", .{v}),
         }
     }
 
     self.allocator.free(self.state.planes);
+    self.allocator.free(self.state.airports);
 }
 
 //
@@ -281,6 +281,14 @@ const Airport = struct {
     id: u8 = 0,
     pos: V2 = .{ .x = 0, .y = 0 },
     heading: u16 = 0,
+
+    pub fn draw(self: Airport, camera: rl.Camera2D) !void {
+        const screen_pos = rl.getWorldToScreen2D(self.pos, camera);
+        const rec = rect(screen_pos, .{ .x = 6, .y = 128 });
+        const deg: f32 = @as(f32, @floatFromInt(self.heading)) / 65536;
+
+        rl.drawRectanglePro(rec, self.pos.scale(0.5), deg * 360, rl.Color.gray);
+    }
 };
 
 const flip_y = V2.init(1, -1);
