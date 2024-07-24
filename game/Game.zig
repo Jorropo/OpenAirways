@@ -251,7 +251,7 @@ pub const Plane = struct {
         }
     }
 
-    pub fn intersecting_plane(state: *State, camera: rl.Camera2D, mouse_pos: V2) ?Plane {
+    pub fn intersecting_plane(state: *State, mouse_pos: V2, camera: rl.Camera2D) ?Plane {
         for (state.planes) |p| {
             const mouse_world_pos = rl.getScreenToWorld2D(mouse_pos, camera);
             const center = p.current_pos(state);
@@ -304,11 +304,27 @@ pub const Runway = struct {
         }
     }
 
-    pub fn intersecting_runway(self: Runway, camera: rl.Camera2D, mouse_pos: V2) bool {
+    pub fn intersecting_runway(self: Runway, mouse_pos: V2, camera: rl.Camera2D) bool {
         const screen_pos = rl.getWorldToScreen2D(self.pos, camera);
         const rec = rect(screen_pos, size.addValue(padding * 2 + thickness * 2));
 
         return rotated_rect_intersects(rec, self.heading, mouse_pos);
+    }
+
+    pub fn closest_end(self: Runway, pos: V2, camera: rl.Camera2D) V2 {
+        const rad = radians(self.heading);
+        const screen_pos = self.pos;
+
+        var v1 = V2.init(math.sin(rad), -math.cos(rad));
+        v1 = v1.scale(size.y / camera.zoom / 2);
+
+        const p1 = screen_pos.add(v1);
+        const p2 = screen_pos.subtract(v1);
+        const l1 = pos.subtract(p1).lengthSqr();
+        const l2 = pos.subtract(p2).lengthSqr();
+
+        const p = if (l1 < l2) p1 else p2;
+        return p;
     }
 };
 
@@ -351,6 +367,11 @@ fn degrees(n: u16) f32 {
     return deg * 360;
 }
 
+fn radians(n: u16) f32 {
+    const rad: f32 = (@as(f32, @floatFromInt(n)) / 65536);
+    return rad * math.tau;
+}
+
 fn rect(pos: V2, size: V2) Rect {
     return Rect.init(pos.x, pos.y, size.x, size.y);
 }
@@ -363,10 +384,10 @@ fn rect(pos: V2, size: V2) Rect {
 // https://swharden.com/blog/2022-02-01-point-in-rectangle/
 //
 fn rotated_rect_intersects(rec: Rect, angle: u16, p: V2) bool {
-    const rad = (@as(f32, @floatFromInt(angle)) / 65536) * math.tau;
+    const rad = radians(angle);
 
     var v1 = V2.init(math.sin(rad), -math.cos(rad));
-    var v2 = V2{ .x = -v1.y, .y = v1.x }; // perpendicular of v1
+    var v2 = V2{ .x = -v1.y, .y = v1.x }; // perpendicular to v1
     v1 = v1.scale(rec.height / 2);
     v2 = v2.scale(rec.width / 2);
 
@@ -386,7 +407,7 @@ fn rotated_rect_intersects(rec: Rect, angle: u16, p: V2) bool {
     return apb + bpc + cpd + dpa <= rec.width * rec.height + 0.2;
 }
 
-pub fn triangle_area(a: V2, b: V2, c: V2) f32 {
+fn triangle_area(a: V2, b: V2, c: V2) f32 {
     const sum = a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y);
     return @abs(sum) * 0.5;
 }

@@ -56,8 +56,8 @@ The first packet sent when connecting to the go server.
 - `u32x4` size of the camera. how much of the screen to show the user.
 - `u8` `len(Runways)` the number of available runways; Then repeated for each runway:
   - `u8` id, unique runway id
-  - `i32` x, center of runway, in subpixel units
-  - `i32` y, center of runway in subpixel units
+  - `i32` x, center of runway
+  - `i32` y, center of runway
   - `Rot16` heading, rotation of the runway
 
 ### 0x0801 - StateUpdate
