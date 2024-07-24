@@ -169,11 +169,11 @@ func makeRenderCallback() func(*state.State, func()) {
 				4 + // speed
 				4*4 + // map size
 				4*4 + // visible map area
-				1 + // len(Airports)
+				1 + // len(Runways)
 				(1+ // id
 					4*2+ // pos
 					2)* // heading
-					uint(len(s.Airports))
+					uint(len(s.Runways))
 
 			content = makeBuffer(content, size)
 			b := content
@@ -184,9 +184,9 @@ func makeRenderCallback() func(*state.State, func()) {
 			b = u32(b, uint32(state.Speed))
 			b = rect(b, s.MapSize)
 			b = rect(b, s.CameraSize)
-			b[0] = uint8(len(s.Airports))
+			b[0] = uint8(len(s.Runways))
 			b = b[1:]
-			for _, a := range s.Airports {
+			for _, a := range s.Runways {
 				b[0] = a.ID
 				b = b[1:]
 				b = v2(b, a.Pos)

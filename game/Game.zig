@@ -9,6 +9,7 @@ const Allocator = std.mem.Allocator;
 const Child = std.process.Child;
 
 pub const V2 = rl.Vector2;
+pub const Rect = rl.Rectangle;
 pub const screen = V2.init(1280, 720);
 
 const Game = @This();
@@ -47,7 +48,7 @@ pub const OpCode = enum(u16) {
 pub const PacketSize = enum(usize) {
     GivePlaneHeading = 6,
 
-    GameInit = 42, // NOTE: 42nd byte is size of airports.
+    GameInit = 42, // NOTE: 42nd byte is size of runways.
     // StateUpdate = dynamic,
     MapResize = 16,
 
@@ -57,7 +58,7 @@ pub const PacketSize = enum(usize) {
         2 + // wantHeading
         2; // heading
 
-    const airport_size = 1 + // id
+    const runway_size = 1 + // id
         4 + // x
         4 + // y
         2; // heading
@@ -86,7 +87,7 @@ fn handle_inbound(self: *Game) !void {
     }
 
     self.allocator.free(self.state.planes);
-    self.allocator.free(self.state.airports);
+    self.allocator.free(self.state.runways);
 }
 
 //
@@ -108,21 +109,21 @@ fn read_init_packet(self: *Game) !void {
     self.state.map_size = r_rect(packet[9..25]);
     self.state.camera_size = r_rect(packet[25..41]);
 
-    const airport_count = packet[41];
-    const airport_bytes = try self.allocator.alloc(u8, PacketSize.airport_size * airport_count);
-    defer self.allocator.free(airport_bytes);
-    _ = try out.readAll(airport_bytes);
+    const runway_count = packet[41];
+    const runway_bytes = try self.allocator.alloc(u8, PacketSize.runway_size * runway_count);
+    defer self.allocator.free(runway_bytes);
+    _ = try out.readAll(runway_bytes);
 
-    self.state.airports = try self.allocator.alloc(Airport, airport_count);
-    for (0..airport_count) |i| {
-        const offset = PacketSize.airport_size * i;
-        const b = airport_bytes[offset..];
+    self.state.runways = try self.allocator.alloc(Runway, runway_count);
+    for (0..runway_count) |i| {
+        const offset = PacketSize.runway_size * i;
+        const b = runway_bytes[offset..];
 
-        self.state.airports[i] = .{
+        self.state.runways[i] = .{
             .id = b[0],
             .pos = .{
-                .x = r_f32(b[1..5]) / self.read_state.sub_pixel,
-                .y = r_f32(b[5..9]) / self.read_state.sub_pixel,
+                .x = r_f32(b[1..5]),
+                .y = r_f32(b[5..9]),
             },
             .heading = r_u16(b[9..11]),
         };
@@ -210,10 +211,10 @@ pub const State = struct {
     plane_speed: f32 = 0,
 
     planes: []Plane = &[_]Plane{},
-    airports: []Airport = &[_]Airport{},
+    runways: []Runway = &[_]Runway{},
 
-    map_size: rl.Rectangle = rl.Rectangle.init(0, 0, 0, 0),
-    camera_size: rl.Rectangle = rl.Rectangle.init(0, 0, 0, 0),
+    map_size: Rect = Rect.init(0, 0, 0, 0),
+    camera_size: Rect = Rect.init(0, 0, 0, 0),
 };
 
 pub const Plane = struct {
@@ -222,16 +223,17 @@ pub const Plane = struct {
     want_heading: u16 = 0,
     heading: u16 = 0,
 
-    pub fn draw(self: Plane, allocator: Allocator, state: *State, img: rl.Texture, size: V2, highlight: bool, draw_debug: bool) !void {
-        const full_image = rect(V2.zero(), size);
-        const origin = size.scale(0.5);
+    pub const size: V2 = .{ .x = 64, .y = 64 };
+
+    pub fn draw(self: Plane, allocator: Allocator, state: *State, img: rl.Texture, highlight: bool, draw_debug: bool) !void {
         const center = self.current_pos(state);
+        const origin = size.scale(0.5);
 
         img.drawPro(
-            full_image,
+            rect(V2.zero(), size),
             rect(center, size),
             origin,
-            self.rot(),
+            degrees(self.heading),
             rl.Color.white,
         );
 
@@ -249,7 +251,7 @@ pub const Plane = struct {
         }
     }
 
-    pub fn intersecting_plane(state: *State, size: V2, camera: rl.Camera2D, mouse_pos: V2) ?Plane {
+    pub fn intersecting_plane(state: *State, camera: rl.Camera2D, mouse_pos: V2) ?Plane {
         for (state.planes) |p| {
             const mouse_world_pos = rl.getScreenToWorld2D(mouse_pos, camera);
             const center = p.current_pos(state);
@@ -270,24 +272,43 @@ pub const Plane = struct {
 
         return interpolated;
     }
-
-    fn rot(self: Plane) f32 {
-        const deg: f32 = @as(f32, @floatFromInt(self.heading)) / 65536;
-        return deg * 360;
-    }
 };
 
-const Airport = struct {
+pub const Runway = struct {
     id: u8 = 0,
     pos: V2 = .{ .x = 0, .y = 0 },
     heading: u16 = 0,
 
-    pub fn draw(self: Airport, camera: rl.Camera2D) !void {
-        const screen_pos = rl.getWorldToScreen2D(self.pos, camera);
-        const rec = rect(screen_pos, .{ .x = 6, .y = 128 });
-        const deg: f32 = @as(f32, @floatFromInt(self.heading)) / 65536;
+    pub const size: V2 = .{ .x = 6, .y = 96 };
 
-        rl.drawRectanglePro(rec, self.pos.scale(0.5), deg * 360, rl.Color.gray);
+    const padding: f32 = 4;
+    const thickness: f32 = 3;
+
+    var i: f32 = 0;
+
+    pub fn draw(self: Runway, camera: rl.Camera2D, highlight: bool) !void {
+        const screen_pos = rl.getWorldToScreen2D(self.pos, camera);
+        const rec = rect(screen_pos, size);
+        rl.drawRectanglePro(rec, size.scale(0.5), degrees(self.heading), rl.Color.gray);
+
+        if (highlight) {
+            rl.gl.rlPushMatrix();
+            defer rl.gl.rlPopMatrix();
+            rl.gl.rlTranslatef(screen_pos.x, screen_pos.y, 0);
+            rl.gl.rlRotatef(degrees(self.heading), 0, 0, 1);
+
+            const top_left = size.scale(-0.5).subtractValue(padding + thickness);
+            const highlight_size = size.addValue(padding * 2 + thickness * 2);
+            const highlight_rec = rect(top_left, highlight_size);
+            rl.drawRectangleLinesEx(highlight_rec, thickness, rl.Color.red);
+        }
+    }
+
+    pub fn intersecting_runway(self: Runway, camera: rl.Camera2D, mouse_pos: V2) bool {
+        const screen_pos = rl.getWorldToScreen2D(self.pos, camera);
+        const rec = rect(screen_pos, size.addValue(padding * 2 + thickness * 2));
+
+        return rotated_rect_intersects(rec, self.heading, mouse_pos);
     }
 };
 
@@ -309,12 +330,12 @@ fn r_i32(b: *const [4]u8) i32 {
     return std.mem.readInt(i32, b, .little);
 }
 
-fn r_rect(b: *const [16]u8) rl.Rectangle {
+fn r_rect(b: *const [16]u8) Rect {
     const x: f32 = @floatFromInt(r_i32(b[0..4]));
     const y: f32 = @floatFromInt(r_i32(b[4..8]));
     const w: f32 = @floatFromInt(r_i32(b[8..12]));
     const h: f32 = @floatFromInt(r_i32(b[12..16]));
-    return rl.Rectangle.init(x, y, w, h);
+    return Rect.init(x, y, w, h);
 }
 
 fn w_u16(b: *[2]u8, x: u16) void {
@@ -325,6 +346,47 @@ fn w_u32(b: *[4]u8, x: u32) void {
     std.mem.writeInt(u32, b, x, .little);
 }
 
-fn rect(pos: V2, size: V2) rl.Rectangle {
-    return rl.Rectangle.init(pos.x, pos.y, size.x, size.y);
+fn degrees(n: u16) f32 {
+    const deg: f32 = @as(f32, @floatFromInt(n)) / 65536;
+    return deg * 360;
+}
+
+fn rect(pos: V2, size: V2) Rect {
+    return Rect.init(pos.x, pos.y, size.x, size.y);
+}
+
+// this function assumes rec.x and rec.y are the center of the rectangle.
+//
+// get points of rect:
+// https://stackoverflow.com/a/56848101
+// get whether intersects:
+// https://swharden.com/blog/2022-02-01-point-in-rectangle/
+//
+fn rotated_rect_intersects(rec: Rect, angle: u16, p: V2) bool {
+    const rad = (@as(f32, @floatFromInt(angle)) / 65536) * math.tau;
+
+    var v1 = V2.init(math.sin(rad), -math.cos(rad));
+    var v2 = V2{ .x = -v1.y, .y = v1.x }; // perpendicular of v1
+    v1 = v1.scale(rec.height / 2);
+    v2 = v2.scale(rec.width / 2);
+
+    const center = V2.init(rec.x, rec.y);
+
+    // corners of the rotated rectangle
+    const a = center.add(v1).add(v2);
+    const b = center.add(v1).subtract(v2);
+    const c = center.subtract(v1).subtract(v2);
+    const d = center.subtract(v1).add(v2);
+
+    const apb = triangle_area(a, p, b);
+    const bpc = triangle_area(b, p, c);
+    const cpd = triangle_area(c, p, d);
+    const dpa = triangle_area(d, p, a);
+
+    return apb + bpc + cpd + dpa <= rec.width * rec.height + 0.2;
+}
+
+pub fn triangle_area(a: V2, b: V2, c: V2) f32 {
+    const sum = a.x * (b.y - c.y) + b.x * (c.y - a.y) + c.x * (a.y - b.y);
+    return @abs(sum) * 0.5;
 }

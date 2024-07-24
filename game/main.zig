@@ -8,6 +8,7 @@ const Child = std.process.Child;
 
 const Plane = Game.Plane;
 const V2 = Game.V2;
+const Rect = Game.Rect;
 const screen = Game.screen;
 
 pub fn main() anyerror!void {
@@ -49,9 +50,7 @@ pub fn main() anyerror!void {
     const plane_img = rl.loadTexture("assets/plane_1.png");
     defer plane_img.unload();
 
-    var cl: Client = .{
-        .plane_size = .{ .x = @floatFromInt(plane_img.width), .y = @floatFromInt(plane_img.height) },
-    };
+    var cl: Client = .{};
 
     game.read_state.init.wait();
     server_args[0] = programName; // restore for argsFree
@@ -70,14 +69,18 @@ pub fn main() anyerror!void {
         defer rl.endDrawing();
         defer rl.drawFPS(8, 8); // always draw last
 
-        rl.clearBackground(rl.Color.white);
+        rl.clearBackground(rl.getColor(0x11111100));
 
         game.mu.lock();
 
-        // don't draw with the camera. airports should have a static size.
-        for (state.airports) |airport| {
-            try airport.draw(cl.camera);
+        const mouse_pos = rl.getMousePosition();
+
+        // don't draw with the camera. runways should have a static size.
+        for (state.runways) |r| {
+            const highlight = cl.input == .plane_to_runway and cl.input.plane_to_runway.runway_id == r.id;
+            try r.draw(cl.camera, highlight);
         }
+
         {
             cl.camera.begin();
             defer cl.camera.end();
@@ -87,16 +90,26 @@ pub fn main() anyerror!void {
             state.delta_ticks = @as(f32, @floatFromInt(deltans)) / @as(f32, @floatFromInt(nanosPerTick));
 
             for (state.planes) |plane| {
-                const highlight = cl.input == .plane_target and cl.input.plane_target.id == plane.id;
+                // const highlight = cl.input == .plane_target and cl.input.plane_target.id == plane.id;
+                const highlight = switch (cl.input) {
+                    .plane_target => |t| t.id == plane.id,
+                    .plane_to_runway => |t| t.plane_id == plane.id,
+                    else => false,
+                };
 
-                try plane.draw(allocator, state, plane_img, cl.plane_size, highlight, true);
+                try plane.draw(allocator, state, plane_img, highlight, false);
                 if (highlight) {
                     const loc = plane.current_pos(state);
-                    const current_in_world = rl.getScreenToWorld2D(cl.input.plane_target.current, cl.camera);
-                    rl.drawLineEx(loc, current_in_world, 4, rl.Color.red);
+                    const target = switch (cl.input) {
+                        .plane_to_runway => |t| t.runway_pos,
+                        else => rl.getScreenToWorld2D(mouse_pos, cl.camera),
+                    };
+
+                    rl.drawLineEx(loc, target, 4, rl.Color.red);
                 }
             }
         }
+
         game.mu.unlock();
     }
 
@@ -105,8 +118,6 @@ pub fn main() anyerror!void {
 }
 
 const Client = struct {
-    plane_size: V2,
-
     input: InputState = .none,
     camera: rl.Camera2D = .{ // centered around 0,0
         .offset = .{ .x = screen.x / 2, .y = screen.y / 2 },
@@ -118,11 +129,12 @@ const Client = struct {
     fn handle_input(cl: *Client, game: *Game) !void {
         switch (cl.input) {
             .plane_target => try InputPlaneTarget.handle(cl, game),
+            .plane_to_runway => try InputPlaneToRunway.handle(cl, game),
             .none => try InputState.handle_none(cl, game),
         }
     }
 
-    fn lerp_camera(cl: *Client, camera_size: rl.Rectangle, n: f32) void {
+    fn lerp_camera(cl: *Client, camera_size: Rect, n: f32) void {
         const target = V2{
             .x = camera_size.x + camera_size.width / 2,
             .y = camera_size.y + camera_size.height / 2,
@@ -139,17 +151,17 @@ const Client = struct {
 
 const InputState = union(enum) {
     plane_target: InputPlaneTarget,
+    plane_to_runway: InputPlaneToRunway,
     none,
 
     fn handle_none(cl: *Client, game: *Game) !void {
         const mouse_pos = rl.getMousePosition();
 
         if (rl.isMouseButtonPressed(rl.MouseButton.mouse_button_left)) {
-            const clicked = Plane.intersecting_plane(&game.state, cl.plane_size, cl.camera, mouse_pos);
+            const clicked = Plane.intersecting_plane(&game.state, cl.camera, mouse_pos);
             if (clicked) |p| {
                 cl.input = .{ .plane_target = .{
                     .id = p.id,
-                    .current = mouse_pos,
                 } };
             }
         }
@@ -158,13 +170,24 @@ const InputState = union(enum) {
 
 const InputPlaneTarget = struct {
     id: u32,
-    current: V2,
 
     fn handle(cl: *Client, game: *Game) !void {
         const target = cl.input.plane_target;
         const mouse_pos = rl.getMousePosition();
+        const mouse_delta = rl.getMouseDelta();
 
-        cl.input.plane_target.current = mouse_pos;
+        if (mouse_delta.lengthSqr() != 0) {
+            for (game.state.runways) |r| {
+                if (r.intersecting_runway(cl.camera, mouse_pos)) {
+                    cl.input = .{ .plane_to_runway = .{
+                        .plane_id = target.id,
+                        .runway_id = r.id,
+                        .runway_pos = r.pos,
+                    } };
+                    return;
+                }
+            }
+        }
 
         if (rl.isMouseButtonReleased(rl.MouseButton.mouse_button_left)) {
             var plane_pos: ?V2 = null;
@@ -187,6 +210,44 @@ const InputPlaneTarget = struct {
                 plane_pos.?,
                 mouse_pos,
             );
+            return;
+        }
+    }
+};
+
+const InputPlaneToRunway = struct {
+    plane_id: u32,
+    runway_id: u8,
+    runway_pos: V2,
+
+    fn handle(cl: *Client, game: *Game) !void {
+        const target = cl.input.plane_to_runway;
+        const mouse_pos = rl.getMousePosition();
+        const mouse_delta = rl.getMouseDelta();
+
+        if (mouse_delta.lengthSqr() != 0) {
+            // this should always work. runways is never modified
+            // after game init.
+            var r: Game.Runway = undefined;
+            for (game.state.runways) |runway| {
+                if (target.runway_id == runway.id) {
+                    r = runway;
+                    break;
+                }
+            }
+
+            if (!r.intersecting_runway(cl.camera, mouse_pos)) {
+                cl.input = .{ .plane_target = .{
+                    .id = target.plane_id,
+                } };
+                return;
+            }
+        }
+
+        if (rl.isMouseButtonReleased(rl.MouseButton.mouse_button_left)) {
+            print("send aircraft {} to runway {}\n", .{ target.plane_id, target.runway_id });
+            cl.input = .none;
+            return;
         }
     }
 };

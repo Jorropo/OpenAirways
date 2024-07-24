@@ -28,7 +28,7 @@ The game OpCodes need to be impotent on each tick.
 |--------|------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------|
 | 0x0000 | DoNotUse         |                                                                                                                                                       | 0                                                                            |
 | 0x0001 | GivePlaneHeading | `u32` plane id<br>`Rot16` new heading                                                                                                                 | 4 +<br>2                                                                     |
-| 0x0800 | GameInit         | `u32` tickrate (hz)<br>`u5` SubPixel factor<br>`u32` plane speed<br>`u8` airports (n)<br>`u32x4` map size<br>`u32x4` camera size<br>- `Airport` entry | 4 +<br>1 +<br>4 +<br>4 \* 4 +<br>4 \* 4 +<br>1 + (value of `n`)<br>`n` \* 11 |
+| 0x0800 | GameInit         | `u32` tickrate (hz)<br>`u5` SubPixel factor<br>`u32` plane speed<br>`u32x4` map size<br>`u32x4` camera size<br>`u8` runways (n)<br>- `Runway` entry   | 4 +<br>1 +<br>4 +<br>4 \* 4 +<br>4 \* 4 +<br>1 + (value of `n`)<br>`n` \* 11 |
 | 0x0801 | StateUpdate      | `u32` current tick<br>`u32` planes (n)<br>- `Plane` entry                                                                                             | 4 +<br>4 + (value of `n`)<br>`n` \* 16                                       |
 | 0x0802 | MapResize        | `u32x4` visible map                                                                                                                                   | 4 \* 4                                                                       |
 | 0x2000 | CommitTick       |                                                                                                                                                       | 0                                                                            |
@@ -54,11 +54,11 @@ The first packet sent when connecting to the go server.
 - `u32` speed of the plane in subpixels per tick
 - `u32x4` size of the full map. (x, y, w, h). negative values for x and y are supported. (0,0) is typically expected to be the center.
 - `u32x4` size of the camera. how much of the screen to show the user.
-- `u8` `len(Airports)` the number of available airports; Then repeated for each airport:
-  - `u8` id, unique airport id
+- `u8` `len(Runways)` the number of available runways; Then repeated for each runway:
+  - `u8` id, unique runway id
   - `i32` x, center of runway, in subpixel units
   - `i32` y, center of runway in subpixel units
-  - `Rot16` heading, rotation of the aiaport
+  - `Rot16` heading, rotation of the runway
 
 ### 0x0801 - StateUpdate
 
