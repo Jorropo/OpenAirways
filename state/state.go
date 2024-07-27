@@ -51,8 +51,8 @@ func (p *Plane) flyingStraight() bool {
 func (p *Plane) Position(now Time) (V2, Rot16) {
 	if p.flyingStraight() {
 		distance := float64((now - p.time) * Speed)
-		r := p.heading.Rad()
-		return V2{p.pos.X + int32(distance*math.Sin(r)), p.pos.Y + int32(distance*math.Cos(r))}, p.heading
+		sin, cos := math.Sincos(p.heading.Rad())
+		return V2{p.pos.X + int32(distance*sin), p.pos.Y + int32(distance*cos)}, p.heading
 	}
 
 	var toCenter Rot16
@@ -64,16 +64,18 @@ func (p *Plane) Position(now Time) (V2, Rot16) {
 		// right
 		toCenter = p.heading + Tau/4
 	}
-	center_x := p.pos.X + int32(turnRadius*math.Sin(toCenter.Rad()))
-	center_y := p.pos.Y + int32(turnRadius*math.Cos(toCenter.Rad()))
+	sin, cos := math.Sincos(toCenter.Rad())
+	center_x := p.pos.X + int32(turnRadius*sin)
+	center_y := p.pos.Y + int32(turnRadius*cos)
 	arc := turnRate * Rot16(now-p.time)
 	if diff < 0 {
 		arc = -arc
 	}
 	toDest := toCenter + Tau/2 + arc
+	sin, cos = math.Sincos(toDest.Rad())
 	xy := V2{
-		center_x + int32(turnRadius*math.Sin(toDest.Rad())),
-		center_y + int32(turnRadius*math.Cos(toDest.Rad())),
+		center_x + int32(turnRadius*sin),
+		center_y + int32(turnRadius*cos),
 	}
 	return xy, p.heading + arc
 }
