@@ -42,6 +42,7 @@ type Plane struct {
 	time                 Time // last time position was materialized
 	pos                  V2
 	WantHeading, heading Rot16
+	goingToRunway        *Runway
 }
 
 func (p *Plane) flyingStraight() bool {
@@ -49,8 +50,13 @@ func (p *Plane) flyingStraight() bool {
 }
 
 func (p *Plane) Position(now Time) (V2, Rot16) {
+	dt := now - p.time
+	if dt == 0 {
+		return p.pos, p.heading
+	}
+
 	if p.flyingStraight() {
-		distance := float64((now - p.time) * Speed)
+		distance := float64(dt * Speed)
 		sin, cos := math.Sincos(p.heading.Rad())
 		return V2{p.pos.X + int32(distance*sin), p.pos.Y + int32(distance*cos)}, p.heading
 	}
@@ -67,7 +73,7 @@ func (p *Plane) Position(now Time) (V2, Rot16) {
 	sin, cos := math.Sincos(toCenter.Rad())
 	center_x := p.pos.X + int32(turnRadius*sin)
 	center_y := p.pos.Y + int32(turnRadius*cos)
-	arc := turnRate * Rot16(now-p.time)
+	arc := turnRate * Rot16(dt)
 	if diff < 0 {
 		arc = -arc
 	}
@@ -80,28 +86,82 @@ func (p *Plane) Position(now Time) (V2, Rot16) {
 	return xy, p.heading + arc
 }
 
-func (p *Plane) tick(now Time) {
+func (p *Plane) tick(s *State) {
 	if p.flyingStraight() {
 		return
 	}
 
-	dt := uint(now - p.time)
+	dt := uint(s.Now - p.time)
 	tgt := min(p.heading-p.WantHeading, p.WantHeading-p.heading)
 	if dt*turnRate > uint(tgt) {
-		p.pos, _ = p.Position(now)
+		p.pos, _ = p.Position(s.Now)
 		p.heading = p.WantHeading
-		p.time = now
+		p.time = s.Now
 	}
 }
 
 func (p *Plane) Turn(now Time, heading Rot16) {
+	if heading == p.WantHeading {
+		return
+	}
+
 	p.pos, p.heading = p.Position(now)
 	p.WantHeading = heading
 	p.time = now
 }
 
+func (p *Plane) GotoRunway(s *State, r *Runway) {
+	p.goingToRunway = r
+	p.pilot(s)
+}
+
+// pilot decide what to do next to reach our destination
+func (p *Plane) pilot(s *State) {
+	if p.goingToRunway == nil {
+		return
+	}
+
+	pos, heading := p.Position(s.Now)
+	// consider a stabilized approach to at most 10° off
+	// we should probably vary this based on distance, a plane 10km away can be 10° off and be way off course
+	const pathBounds = 10 * Tau / 360
+	r := p.goingToRunway
+	headingAlignment, reversed := heading.ReversibleAlignement(r.Heading)
+	if abs(headingAlignment) <= pathBounds {
+		// we are alligned with the runway
+		dir := rpcgame.FromRot16(math.Atan2(
+			float64(r.Pos.X-pos.X),
+			float64(r.Pos.Y-pos.Y),
+		))
+		positionalAlignment, positionReversed := dir.ReversibleAlignement(r.Heading)
+		if positionReversed != reversed {
+			// we are flying away, turn towards the runway.
+			log.Println(p.ID, "turning towards runway")
+			tgt := r.Heading
+			if positionReversed {
+				tgt += Tau / 2
+			}
+			p.Turn(s.Now, tgt)
+			return
+		}
+		if abs(positionalAlignment) <= pathBounds {
+			// we are correctly placed in the flight path and alligned, nudge us the right way around using a PD controler
+			tgt := Rot16(int16(r.Heading) + positionalAlignment)
+			log.Println(p.ID, "nudging to", tgt)
+			p.Turn(s.Now, tgt)
+		} else {
+			// we are correctly placed in the flight path but not alligned, turn towards the runway.
+			log.Println(p.ID, "turning towards runway")
+			tgt := r.Heading
+			if positionReversed {
+				tgt += Tau / 2
+			}
+			p.Turn(s.Now, tgt)
+		}
+	}
+}
+
 type Runway struct {
-	ID      uint8
 	Pos     V2
 	Heading Rot16
 }
@@ -110,7 +170,7 @@ type State struct {
 	nextPlaneId uint32 // monotonic increasing plane id
 	Now         Time
 	Planes      []Plane
-	Runways     []Runway
+	Runways     []Runway // ID is index into this slice
 	MapSize     Rect
 	CameraSize  Rect
 }
@@ -128,7 +188,7 @@ func (s *State) Tick() {
 	}
 
 	for i := range s.Planes {
-		s.Planes[i].tick(s.Now)
+		s.Planes[i].tick(s)
 	}
 }
 
@@ -150,12 +210,38 @@ func (s *State) Apply(c rpcgame.Command) {
 			}
 			return 1
 		})
-		if ok {
-			s.Planes[i].Turn(s.Now, heading)
-		} else {
+		if !ok {
 			// probably the user giving orders to a plane that just landed or left the map
 			log.Println("got GivePlaneHeading for missing plane:", id)
 		}
+
+		s.Planes[i].Turn(s.Now, heading)
+		s.Planes[i].goingToRunway = nil
+	case rpcgame.SendPlaneToRunway:
+		plane_id := binary.LittleEndian.Uint32(b)
+		runway_id := binary.LittleEndian.Uint16(b[4:])
+
+		i, ok := slices.BinarySearchFunc(s.Planes, plane_id, func(p Plane, id uint32) int {
+			other := p.ID
+			if other < id {
+				return -1
+			}
+			if other == id {
+				return 0
+			}
+			return 1
+		})
+		if !ok {
+			log.Println("got SendPlaneToRunway for missing plane:", plane_id)
+			return
+		}
+
+		if runway_id >= uint16(len(s.Runways)) {
+			log.Println("got SendPlaneToRunway for missing runway:", runway_id)
+			return
+		}
+
+		s.Planes[i].GotoRunway(s, &s.Runways[runway_id])
 	default:
 		log.Fatalf("got invalid opcode: %v", op)
 	}
@@ -185,7 +271,7 @@ func (s *State) Read(r io.Reader) (red uint, err error) {
 	s.Now = Time(binary.LittleEndian.Uint32(b[:]))
 	s.nextPlaneId = binary.LittleEndian.Uint32(b[4:])
 	nPlanes := binary.LittleEndian.Uint32(b[8:])
-	nRunways := binary.LittleEndian.Uint32(b[12:])
+	nRunways := binary.LittleEndian.Uint16(b[12:])
 
 	s.Planes = slices.Grow(s.Planes[:0], int(nPlanes))
 	for range nPlanes {
@@ -211,9 +297,8 @@ func (s *State) Read(r io.Reader) (red uint, err error) {
 			return red, fmt.Errorf("reading Runway: %w", err)
 		}
 		s.Runways = append(s.Runways, Runway{
-			ID:      b[0],
-			Pos:     V2{int32(binary.LittleEndian.Uint32(b[1:])), int32(binary.LittleEndian.Uint32(b[5:]))},
-			Heading: Rot16(binary.LittleEndian.Uint16(b[9:])),
+			Pos:     V2{int32(binary.LittleEndian.Uint32(b[:])), int32(binary.LittleEndian.Uint32(b[4:]))},
+			Heading: Rot16(binary.LittleEndian.Uint16(b[8:])),
 		})
 	}
 
@@ -234,7 +319,7 @@ func (s *State) UnmarshalBinary(b []byte) error {
 const headerSize = 4 + // Now
 	4 + // nextPlaneId
 	4 + // len(Planes)
-	4 // len(Runways)
+	2 // len(Runways)
 
 const planeSize = 4 + // id
 	4 + // now (last materialized time)
@@ -243,8 +328,7 @@ const planeSize = 4 + // id
 	2 + // wantHeading
 	2 // heading
 
-const runwaySize = 1 + // id
-	4*2 + // pos
+const runwaySize = 4*2 + // pos
 	2 // heading
 
 // AppendMarshalBinary appends the wire binary representation of s to in and returns the result.
@@ -256,7 +340,7 @@ func (s *State) AppendMarshalBinary(in []byte) []byte {
 	b = u32(b, uint32(s.Now))
 	b = u32(b, uint32(s.nextPlaneId))
 	b = u32(b, uint32(len(s.Planes)))
-	b = u32(b, uint32(len(s.Runways)))
+	b = u16(b, uint16(len(s.Runways)))
 
 	for _, p := range s.Planes {
 		b = u32(b, p.ID)
@@ -268,8 +352,6 @@ func (s *State) AppendMarshalBinary(in []byte) []byte {
 	}
 
 	for _, r := range s.Runways {
-		b[0] = r.ID
-		b = b[1:]
 		b = u32(b, uint32(r.Pos.X))
 		b = u32(b, uint32(r.Pos.Y))
 		b = u16(b, uint16(r.Heading))

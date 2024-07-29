@@ -37,12 +37,15 @@ type OpCode uint16
 const (
 	_ OpCode = iota
 	GivePlaneHeading
+	SendPlaneToRunway
 )
 
 func (o OpCode) String() string {
 	switch o {
 	case GivePlaneHeading:
 		return "GivePlaneHeading"
+	case SendPlaneToRunway:
+		return "SendPlaneToRunway"
 	case CommitTick:
 		return "CommitTick"
 	default:
@@ -57,6 +60,8 @@ func (o OpCode) Size() (size uint, exists bool) {
 	switch o {
 	case GivePlaneHeading:
 		return 8, true // opcode: u16, id: u32, heading: Rot16
+	case SendPlaneToRunway:
+		return 8, true
 	case CommitTick:
 		return 2, true // opcode: u16
 	default:
@@ -84,6 +89,14 @@ func EncodeGivePlaneHeading(id uint32, heading Rot16) Command {
 	return c
 }
 
+func EncodeSendPlaneToRunway(plane_id uint32, runway_id uint16) Command {
+	var c Command
+	binary.LittleEndian.PutUint16(c[:], uint16(SendPlaneToRunway))
+	binary.LittleEndian.PutUint32(c[2:], plane_id)
+	binary.LittleEndian.PutUint16(c[6:], runway_id)
+	return c
+}
+
 // Tau is one full turn as a Rot16
 const Tau = 1 << 16
 
@@ -93,8 +106,30 @@ func (r Rot16) Rad() float64 {
 	return float64(r) / 65536 * math.Pi * 2
 }
 
+func FromRot16(rad float64) Rot16 {
+	return Rot16(rad * 65536 / (math.Pi * 2))
+}
+
+const oneTurn = 1 << 16
+
+func (x Rot16) ReversibleAlignement(y Rot16) (alignement int16, reversed bool) {
+	alignement = int16(x - y)
+	reversed = abs(alignement) > abs(alignement+-oneTurn/2)
+	if reversed {
+		alignement += -oneTurn / 2
+	}
+	return
+}
+
 func EncodeCommitTick() Command {
 	var c Command
 	binary.LittleEndian.PutUint16(c[:], uint16(CommitTick))
 	return c
+}
+
+func abs[T ~int | ~int8 | ~int16 | ~int32 | ~int64 | ~float32 | ~float64](a T) T {
+	if a < 0 {
+		a = -a
+	}
+	return a
 }

@@ -243,7 +243,7 @@ const InputPlaneToRunway = struct {
         }
 
         if (rl.isMouseButtonReleased(rl.MouseButton.mouse_button_left)) {
-            print("send aircraft {} to runway {}\n", .{ target.plane_id, target.runway.id });
+            try game.send_plane_to_runway(target.plane_id, target.runway.id);
             cl.input = .none;
             return;
         }

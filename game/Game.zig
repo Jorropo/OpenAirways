@@ -38,6 +38,7 @@ pub const ReadState = struct {
 
 pub const OpCode = enum(u16) {
     GivePlaneHeading = 0x0001,
+    SendPlaneToRunway = 0x0002,
 
     GameInit = 0x0800,
     StateUpdate = 0x0801,
@@ -48,7 +49,7 @@ pub const OpCode = enum(u16) {
 pub const PacketSize = enum(usize) {
     GivePlaneHeading = 6,
 
-    GameInit = 42, // NOTE: 42nd byte is size of runways.
+    GameInit = 43, // NOTE: 42,43nd bytes are the size of runways.
     // StateUpdate = dynamic,
     MapResize = 16,
 
@@ -58,8 +59,7 @@ pub const PacketSize = enum(usize) {
         2 + // wantHeading
         2; // heading
 
-    const runway_size = 1 + // id
-        4 + // x
+    const runway_size = 4 + // x
         4 + // y
         2; // heading
 };
@@ -120,12 +120,12 @@ fn read_init_packet(self: *Game) !void {
         const b = runway_bytes[offset..];
 
         self.state.runways[i] = .{
-            .id = b[0],
+            .id = @intCast(i),
             .pos = .{
-                .x = r_f32(b[1..5]),
-                .y = r_f32(b[5..9]),
+                .x = r_f32(b[0..4]),
+                .y = r_f32(b[4..8]),
             },
-            .heading = r_u16(b[9..11]),
+            .heading = r_u16(b[8..10]),
         };
     }
 }
@@ -203,6 +203,15 @@ pub fn give_plane_heading(self: Game, plane_id: u32, start: V2, target: V2) !voi
     _ = try self.server_proc.stdin.?.writeAll(&b);
 }
 
+pub fn send_plane_to_runway(self: Game, plane_id: u32, runway_id: u16) !void {
+    var b = [_]u8{0} ** (2 + 4 + 2);
+    w_u16(b[0..2], @intFromEnum(OpCode.SendPlaneToRunway));
+    w_u32(b[2..6], plane_id);
+    w_u16(b[6..], runway_id);
+
+    _ = try self.server_proc.stdin.?.writeAll(&b);
+}
+
 pub const State = struct {
     now: u32 = 0,
 
@@ -275,7 +284,7 @@ pub const Plane = struct {
 };
 
 pub const Runway = struct {
-    id: u8 = 0,
+    id: u16 = 0,
     pos: V2 = .{ .x = 0, .y = 0 },
     heading: u16 = 0,
 
