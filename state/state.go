@@ -87,6 +87,8 @@ func (p *Plane) Position(now Time) (V2, Rot16) {
 }
 
 func (p *Plane) tick(s *State) {
+	p.pilot(s)
+
 	if p.flyingStraight() {
 		return
 	}
@@ -121,44 +123,26 @@ func (p *Plane) pilot(s *State) {
 		return
 	}
 
-	pos, heading := p.Position(s.Now)
-	// consider a stabilized approach to at most 10° off
-	// we should probably vary this based on distance, a plane 10km away can be 10° off and be way off course
-	const pathBounds = 10 * Tau / 360
+	pos, _ := p.Position(s.Now)
+
 	r := p.goingToRunway
-	headingAlignment, reversed := heading.ReversibleAlignement(r.Heading)
-	if abs(headingAlignment) <= pathBounds {
-		// we are alligned with the runway
-		dir := rpcgame.FromRot16(math.Atan2(
-			float64(r.Pos.X-pos.X),
-			float64(r.Pos.Y-pos.Y),
-		))
-		positionalAlignment, positionReversed := dir.ReversibleAlignement(r.Heading)
-		if positionReversed != reversed {
-			// we are flying away, turn towards the runway.
-			log.Println(p.ID, "turning towards runway")
-			tgt := r.Heading
-			if positionReversed {
-				tgt += Tau / 2
-			}
-			p.Turn(s.Now, tgt)
-			return
-		}
-		if abs(positionalAlignment) <= pathBounds {
-			// we are correctly placed in the flight path and alligned, nudge us the right way around using a PD controler
-			tgt := Rot16(int16(r.Heading) + positionalAlignment)
-			log.Println(p.ID, "nudging to", tgt)
-			p.Turn(s.Now, tgt)
-		} else {
-			// we are correctly placed in the flight path but not alligned, turn towards the runway.
-			log.Println(p.ID, "turning towards runway")
-			tgt := r.Heading
-			if positionReversed {
-				tgt += Tau / 2
-			}
-			p.Turn(s.Now, tgt)
-		}
+	dir := rpcgame.FromRot16(math.Atan2(
+		float64(r.Pos.X-pos.X),
+		float64(r.Pos.Y-pos.Y),
+	))
+	runwayHeading := r.Heading
+	positionalAlignment := int16(dir - runwayHeading)
+	if abs(positionalAlignment) >= Tau/4 {
+		log.Println(p.ID, "reversed")
+		runwayHeading -= Tau / 2
+		positionalAlignment = int16(dir - runwayHeading)
 	}
+
+	const maximumInterceptionAngle = 30 * Tau / 360
+	o := max(min(positionalAlignment, maximumInterceptionAngle), -maximumInterceptionAngle)
+	tgt := Rot16(int16(runwayHeading) + o)
+	log.Println(p.ID, "nudging to", tgt, "; positionalAlignment:", positionalAlignment, "; o:", o, "; dir: ", dir, "; pos:", pos)
+	p.Turn(s.Now, tgt)
 }
 
 type Runway struct {

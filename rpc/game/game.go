@@ -107,18 +107,7 @@ func (r Rot16) Rad() float64 {
 }
 
 func FromRot16(rad float64) Rot16 {
-	return Rot16(rad * 65536 / (math.Pi * 2))
-}
-
-const oneTurn = 1 << 16
-
-func (x Rot16) ReversibleAlignement(y Rot16) (alignement int16, reversed bool) {
-	alignement = int16(x - y)
-	reversed = abs(alignement) > abs(alignement+-oneTurn/2)
-	if reversed {
-		alignement += -oneTurn / 2
-	}
-	return
+	return Rot16(rad / (math.Pi * 2) * 65536)
 }
 
 func EncodeCommitTick() Command {
