@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	mrand "math/rand/v2"
 	"os"
 	"sync"
 	"time"
@@ -82,13 +83,19 @@ func New(h host.Host, render renderer, target peer.ID) (*Netcode, error) {
 	n.stateCond.L = &n.lk
 	n.sendCond.L = &n.lk
 
-	n.rollback.Commit.Runways = []state.Runway{
-		{ID: 0, Pos: state.V2{X: 80, Y: 60}},
-		{ID: 1, Pos: state.V2{X: 0, Y: 0}, Heading: state.Tau / 4},
-		{ID: 2, Pos: state.V2{X: -100, Y: -200}, Heading: state.Tau / 3},
-	}
 	n.rollback.Commit.MapSize = state.Rect{X: -960, Y: -540, W: 1920, H: 1080}
 	n.rollback.Commit.CameraSize = state.Rect{X: -480, Y: -270, W: 960, H: 540}
+	for i := range uint8(3) {
+		r := state.Runway{
+			ID: i,
+			Pos: state.V2{
+				X: mrand.Int32N(n.rollback.Commit.CameraSize.W-100) - n.rollback.Commit.CameraSize.W/2,
+				Y: mrand.Int32N(n.rollback.Commit.CameraSize.H-100) - n.rollback.Commit.CameraSize.H/2,
+			},
+			Heading: rpcgame.Rot16(mrand.Uint32()),
+		}
+		n.rollback.Commit.Runways = append(n.rollback.Commit.Runways, r)
+	}
 	n.rollback.Live.Copy(&n.rollback.Commit)
 
 	if n.target == "" {

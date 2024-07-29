@@ -176,7 +176,7 @@ func (s *State) Copy(o *State) {
 // Read reads the wire binary representation from r and writes to s.
 func (s *State) Read(r io.Reader) (red uint, err error) {
 	// FIXME: this is very trustfull and will panic or generate panics down the line if the input is malicious
-	var b [max(headerSize, planeSize)]byte
+	var b [max(headerSize, planeSize, runwaySize)]byte
 	n, err := io.ReadFull(r, b[:headerSize])
 	red += uint(n)
 	if err != nil {
@@ -185,6 +185,7 @@ func (s *State) Read(r io.Reader) (red uint, err error) {
 	s.Now = Time(binary.LittleEndian.Uint32(b[:]))
 	s.nextPlaneId = binary.LittleEndian.Uint32(b[4:])
 	nPlanes := binary.LittleEndian.Uint32(b[8:])
+	nRunways := binary.LittleEndian.Uint32(b[12:])
 
 	s.Planes = slices.Grow(s.Planes[:0], int(nPlanes))
 	for range nPlanes {
@@ -201,6 +202,21 @@ func (s *State) Read(r io.Reader) (red uint, err error) {
 			heading:     Rot16(binary.LittleEndian.Uint16(b[18:])),
 		})
 	}
+
+	s.Runways = slices.Grow(s.Runways[:0], int(nRunways))
+	for range nRunways {
+		n, err = io.ReadFull(r, b[:runwaySize])
+		red += uint(n)
+		if err != nil {
+			return red, fmt.Errorf("reading Runway: %w", err)
+		}
+		s.Runways = append(s.Runways, Runway{
+			ID:      b[0],
+			Pos:     V2{int32(binary.LittleEndian.Uint32(b[1:])), int32(binary.LittleEndian.Uint32(b[5:]))},
+			Heading: Rot16(binary.LittleEndian.Uint16(b[9:])),
+		})
+	}
+
 	return red, nil
 }
 
@@ -217,7 +233,8 @@ func (s *State) UnmarshalBinary(b []byte) error {
 
 const headerSize = 4 + // Now
 	4 + // nextPlaneId
-	4 // len(Planes)
+	4 + // len(Planes)
+	4 // len(Runways)
 
 const planeSize = 4 + // id
 	4 + // now (last materialized time)
@@ -226,15 +243,21 @@ const planeSize = 4 + // id
 	2 + // wantHeading
 	2 // heading
 
+const runwaySize = 1 + // id
+	4*2 + // pos
+	2 // heading
+
 // AppendMarshalBinary appends the wire binary representation of s to in and returns the result.
 func (s *State) AppendMarshalBinary(in []byte) []byte {
-	size := headerSize + planeSize*len(s.Planes)
+	size := headerSize + planeSize*len(s.Planes) + runwaySize*len(s.Runways)
 	r := append(in, make([]byte, size)...)
 	b := r[len(in):]
 
 	b = u32(b, uint32(s.Now))
 	b = u32(b, uint32(s.nextPlaneId))
 	b = u32(b, uint32(len(s.Planes)))
+	b = u32(b, uint32(len(s.Runways)))
+
 	for _, p := range s.Planes {
 		b = u32(b, p.ID)
 		b = u32(b, uint32(p.time))
@@ -243,6 +266,15 @@ func (s *State) AppendMarshalBinary(in []byte) []byte {
 		b = u16(b, uint16(p.WantHeading))
 		b = u16(b, uint16(p.heading))
 	}
+
+	for _, r := range s.Runways {
+		b[0] = r.ID
+		b = b[1:]
+		b = u32(b, uint32(r.Pos.X))
+		b = u32(b, uint32(r.Pos.Y))
+		b = u16(b, uint16(r.Heading))
+	}
+
 	if len(b) != 0 {
 		panic("State marshal logic error, didn't consumed all the buffer")
 	}
