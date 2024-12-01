@@ -48,3 +48,9 @@ Draw backs:
 - anything being stored in game state (inputs modifying it, entities moving, ...) needs to deterministically do their transformations
 - when you watch an other players performing an action, significant teleportations can happen if they have high ping to you because you receive their packets in the past relative to your current play screen which is then fast-forwarded to you.
 - exploitable by cheaters in some ways, they can purposely play in the past or future. I don't care tbh, that a co-op game, if someone cheat kick them out, or don't, you do you I don't care.
+
+## How to run it
+
+```
+zig build run -- -debug-start-clients 1
+```
