@@ -1,6 +1,6 @@
 module github.com/Jorropo/OpenAirways
 
-go 1.23
+go 1.23.5
 
 require (
 	github.com/libp2p/go-libp2p v0.35.4
