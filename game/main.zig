@@ -31,7 +31,7 @@ pub fn main() anyerror!void {
 
     var server_args = try std.process.argsAlloc(allocator);
     const programName = server_args[0];
-    const const_server_args: [][:0]const u8 = server_args;
+    const const_server_args: [][:0]const u8 = @ptrCast(server_args);
     const_server_args[0] = "./game-server";
 
     var proc = Child.init(const_server_args, allocator);
@@ -47,7 +47,7 @@ pub fn main() anyerror!void {
 
     try game.start_server();
 
-    const plane_img = rl.loadTexture("assets/plane_1.png");
+    const plane_img = try rl.loadTexture("assets/plane_1.png");
     defer plane_img.unload();
 
     var cl: Client = .{};
@@ -157,7 +157,7 @@ const InputState = union(enum) {
     fn handle_none(cl: *Client, game: *Game) !void {
         const mouse_pos = rl.getMousePosition();
 
-        if (rl.isMouseButtonPressed(rl.MouseButton.mouse_button_left)) {
+        if (rl.isMouseButtonPressed(rl.MouseButton.left)) {
             const clicked = Plane.intersecting_plane(&game.state, mouse_pos, cl.camera);
             if (clicked) |p| {
                 cl.input = .{ .plane_target = .{
@@ -188,7 +188,7 @@ const InputPlaneTarget = struct {
             }
         }
 
-        if (rl.isMouseButtonReleased(rl.MouseButton.mouse_button_left)) {
+        if (rl.isMouseButtonReleased(rl.MouseButton.left)) {
             var plane_pos: ?V2 = null;
             for (game.state.planes) |p| {
                 if (p.id == target.id) {
@@ -242,7 +242,7 @@ const InputPlaneToRunway = struct {
             }
         }
 
-        if (rl.isMouseButtonReleased(rl.MouseButton.mouse_button_left)) {
+        if (rl.isMouseButtonReleased(rl.MouseButton.left)) {
             print("send aircraft {} to runway {}\n", .{ target.plane_id, target.runway.id });
             cl.input = .none;
             return;

@@ -245,8 +245,8 @@ pub const Plane = struct {
         }
 
         if (draw_debug) {
-            const debug_text = try std.fmt.allocPrintZ(allocator, "id={}, pos=[{d}, {d}]", .{ self.id, self.pos.x, self.pos.y });
-            rl.drawTextEx(rl.getFontDefault(), debug_text, top_right, 16, 1, rl.Color.red);
+            const debug_text = try std.fmt.allocPrintSentinel(allocator, "id={}, pos=[{d}, {d}]", .{ self.id, self.pos.x, self.pos.y }, 0);
+            rl.drawTextEx(try rl.getFontDefault(), debug_text, top_right, 16, 1, rl.Color.red);
             allocator.free(debug_text);
         }
     }

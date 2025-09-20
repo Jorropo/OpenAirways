@@ -12,7 +12,7 @@ pub fn build(b: *std.Build) !void {
     //
     //
 
-    const raylib_dep = b.dependency("raylib-zig", .{
+    const raylib_dep = b.dependency("raylib_zig", .{
         .target = target,
         .optimize = optimize,
     });
@@ -22,9 +22,11 @@ pub fn build(b: *std.Build) !void {
 
     const exe = b.addExecutable(.{
         .name = "OpenAirways",
-        .root_source_file = b.path("game/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("game/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
 
     exe.linkLibrary(raylib_artifact);
@@ -44,7 +46,6 @@ pub fn build(b: *std.Build) !void {
 
     const build_server = std.Build.Step.Run.create(b, "build server");
     build_server.addArgs(&.{ "go", "build", "-o", out, main_pkg });
-    build_server.setEnvironmentVariable("GOEXPERIMENT", "rangefunc");
 
     if (server_build_mode == .default) {
         b.getInstallStep().dependOn(&build_server.step);
@@ -64,9 +65,12 @@ pub fn build(b: *std.Build) !void {
     run_step.dependOn(&run_cmd.step);
 
     const exe_unit_tests = b.addTest(.{
-        .root_source_file = b.path("game/main.zig"),
-        .target = target,
-        .optimize = optimize,
+        .name = "game-tests",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("game/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
     });
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);
